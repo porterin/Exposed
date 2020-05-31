@@ -122,6 +122,14 @@ class InSubQueryOp<T>(val expr: Expression<T>, val query: Query): Op<Boolean>() 
     }
 }
 
+class NotInSubQueryOp<T>(val expr: Expression<T>, val query: Query) : Op<Boolean>() {
+    override fun toQueryBuilder(queryBuilder: QueryBuilder) = queryBuilder {
+        append(expr, " NOT IN (")
+        query.prepareSQL(this)
+        +")"
+    }
+}
+
 class QueryParameter<T>(val value: T, val sqlType: IColumnType) : Expression<T>() {
     override fun toQueryBuilder(queryBuilder: QueryBuilder) = queryBuilder { registerArgument(sqlType, value) }
 }
@@ -210,21 +218,10 @@ class notExists(val query: Query) : Op<Boolean>() {
     }
 }
 
-class PlusOp<T, S: T>(val expr1: Expression<T>, val expr2: Expression<S>, override val columnType: IColumnType): ExpressionWithColumnType<T>() {
-    override fun toQueryBuilder(queryBuilder: QueryBuilder) = queryBuilder { append(expr1, '+', expr2) }
-}
-
-class MinusOp<T, S: T>(val expr1: Expression<T>, val expr2: Expression<S>, override val columnType: IColumnType): ExpressionWithColumnType<T>() {
-    override fun toQueryBuilder(queryBuilder: QueryBuilder) = queryBuilder { append(expr1, '-', expr2) }
-}
-
-class TimesOp<T, S: T>(val expr1: Expression<T>, val expr2: Expression<S>, override val columnType: IColumnType): ExpressionWithColumnType<T>() {
-    override fun toQueryBuilder(queryBuilder: QueryBuilder) = queryBuilder { append(expr1, '*', expr2) }
-}
-
-class DivideOp<T, S: T>(val expr1: Expression<T>, val expr2: Expression<S>, override val columnType: IColumnType): ExpressionWithColumnType<T>() {
-    override fun toQueryBuilder(queryBuilder: QueryBuilder) = queryBuilder { append('(', expr1, " / ", expr2, ')') }
-}
+class PlusOp<T, S: T>(expr1: Expression<T>, expr2: Expression<S>, override val columnType: IColumnType): CustomOperator<T>("+", columnType, expr1, expr2)
+class MinusOp<T, S: T>(expr1: Expression<T>, expr2: Expression<S>, override val columnType: IColumnType): CustomOperator<T>("-", columnType, expr1, expr2)
+class TimesOp<T, S: T>(expr1: Expression<T>, expr2: Expression<S>, override val columnType: IColumnType): CustomOperator<T>("*", columnType, expr1, expr2)
+class DivideOp<T, S: T>(expr1: Expression<T>, expr2: Expression<S>, override val columnType: IColumnType): CustomOperator<T>("/", columnType, expr1, expr2)
 
 class ModOp<T:Number?, S: Number?>(val expr1: Expression<T>, val expr2: Expression<S>, override val columnType: IColumnType): ExpressionWithColumnType<T>() {
     override fun toQueryBuilder(queryBuilder: QueryBuilder) = queryBuilder {
