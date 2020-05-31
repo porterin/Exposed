@@ -5,8 +5,11 @@ import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.Transaction
 import org.jetbrains.exposed.sql.exposedLogger
 import org.jetbrains.exposed.sql.transactions.*
+import org.slf4j.LoggerFactory
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
+
+private val logger = LoggerFactory.getLogger("org.jetbrains.exposed.sql.transactions.experimental.SuspendedKt")
 
 internal class TransactionContext(val manager: TransactionManager?, val transaction: Transaction?)
 
@@ -46,13 +49,34 @@ internal class TransactionCoroutineElement(val newTransaction: Transaction, mana
 
 suspend fun <T> newSuspendedTransaction(context: CoroutineDispatcher? = null, db: Database? = null, statement: suspend Transaction.() -> T): T =
     withTransactionScope(context, null, db) {
+        val jobId = this.hashCode()
+        val txId = tx.id
+        val connectionCode = tx.connection.hashCode()
+
+        logger.debug("Executing {} newSuspendedTransaction in transaction: {} and connection: {}", jobId, txId, connectionCode)
         suspendedTransactionAsyncInternal(true, statement).await()
+            .also { logger.debug("Execution {} newSuspendedTransaction in transaction: {} and connection: {} complete", jobId, txId, connectionCode) }
     }
 
 suspend fun <T> Transaction.suspendedTransaction(context: CoroutineDispatcher? = null, statement: suspend Transaction.() -> T): T =
     withTransactionScope(context, this) {
+        val jobId = this.hashCode()
+        val txId = tx.id
+        val connectionCode = tx.connection.hashCode()
+
+        logger.debug("Executing {} suspendedTransaction in transaction: {} and connection: {}", jobId, txId, connectionCode)
         suspendedTransactionAsyncInternal(false, statement).await()
+            .also { logger.debug("Execution {} suspendedTransaction in transaction: {} and connection: {} complete", jobId, txId, connectionCode) }
     }
+
+suspend fun <T> continueSuspendedTransaction(context: CoroutineDispatcher? = null, db: Database? = null, statement: suspend Transaction.() -> T): T {
+    val currentTransaction = coroutineContext[TransactionScope]?.tx
+    logger.debug("continueSuspendTransaction called with transaction: {} and connection: {}", currentTransaction?.id, currentTransaction?.connection?.hashCode())
+    return when (currentTransaction) {
+        null -> newSuspendedTransaction(context, db, statement)
+        else -> currentTransaction.suspendedTransaction(context, statement)
+    }
+}
 
 private fun Transaction.commitInAsync() {
     val currentTransaction = TransactionManager.currentOrNull()
