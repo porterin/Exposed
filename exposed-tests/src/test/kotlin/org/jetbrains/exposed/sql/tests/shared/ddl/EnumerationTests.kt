@@ -21,23 +21,27 @@ class EnumerationTests : DatabaseTestsBase() {
 
         internal fun initEnumColumn(sql: String) {
             (columns as MutableList<Column<*>>).remove(enumColumn)
-            enumColumn = customEnumeration("enumColumn", sql, { value ->
-                when {
-                    currentDialectTest is H2Dialect && value is Int -> DDLTests.Foo.values()[value]
-                    else -> DDLTests.Foo.valueOf(value as String)
+            enumColumn = customEnumeration(
+                "enumColumn", sql,
+                { value ->
+                    when {
+                        currentDialectTest is H2Dialect && value is Int -> DDLTests.Foo.values()[value]
+                        else -> DDLTests.Foo.valueOf(value as String)
+                    }
+                },
+                { value ->
+                    when (currentDialectTest) {
+                        is PostgreSQLDialect -> DDLTests.PGEnum(sql, value)
+                        else -> value.name
+                    }
                 }
-            }, { value ->
-                when (currentDialectTest) {
-                    is PostgreSQLDialect -> DDLTests.PGEnum(sql, value)
-                    else -> value.name
-                }
-            })
+            )
         }
     }
 
     @Test
     fun testCustomEnumeration01() {
-        withDb(listOf(TestDB.H2, TestDB.MYSQL, TestDB.POSTGRESQL)) {
+        withDb(listOf(TestDB.H2, TestDB.MYSQL, TestDB.POSTGRESQL, TestDB.POSTGRESQLNG)) {
             val sqlType = when (currentDialectTest) {
                 is H2Dialect, is MysqlDialect -> "ENUM('Bar', 'Baz')"
                 is PostgreSQLDialect -> "FooEnum"
@@ -52,6 +56,7 @@ class EnumerationTests : DatabaseTestsBase() {
 
             try {
                 if (currentDialectTest is PostgreSQLDialect) {
+                    exec("DROP TYPE IF EXISTS FooEnum;")
                     exec("CREATE TYPE FooEnum AS ENUM ('Bar', 'Baz');")
                 }
                 EnumTable.initEnumColumn(sqlType)
@@ -59,7 +64,7 @@ class EnumerationTests : DatabaseTestsBase() {
                 EnumTable.insert {
                     it[enumColumn] = DDLTests.Foo.Bar
                 }
-                assertEquals(DDLTests.Foo.Bar,  EnumTable.selectAll().single()[EnumTable.enumColumn])
+                assertEquals(DDLTests.Foo.Bar, EnumTable.selectAll().single()[EnumTable.enumColumn])
 
                 EnumTable.update {
                     it[enumColumn] = DDLTests.Foo.Baz
@@ -85,7 +90,7 @@ class EnumerationTests : DatabaseTestsBase() {
 
     @Test
     fun testCustomEnumerationWithDefaultValue() {
-        withDb(listOf(TestDB.H2, TestDB.MYSQL, TestDB.POSTGRESQL)) {
+        withDb(listOf(TestDB.H2, TestDB.MYSQL, TestDB.POSTGRESQL, TestDB.POSTGRESQLNG)) {
             val sqlType = when (currentDialectTest) {
                 is H2Dialect, is MysqlDialect -> "ENUM('Bar', 'Baz')"
                 is PostgreSQLDialect -> "FooEnum2"
@@ -93,6 +98,7 @@ class EnumerationTests : DatabaseTestsBase() {
             }
             try {
                 if (currentDialectTest is PostgreSQLDialect) {
+                    exec("DROP TYPE IF EXISTS FooEnum2;")
                     exec("CREATE TYPE FooEnum2 AS ENUM ('Bar', 'Baz');")
                 }
                 EnumTable.initEnumColumn(sqlType)
@@ -101,7 +107,7 @@ class EnumerationTests : DatabaseTestsBase() {
                 }
                 SchemaUtils.create(EnumTable)
 
-                EnumTable.insert {  }
+                EnumTable.insert { }
                 val default = EnumTable.selectAll().single()[EnumTable.enumColumn]
                 assertEquals(DDLTests.Foo.Bar, default)
             } finally {

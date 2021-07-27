@@ -16,17 +16,35 @@ class ConnectionTests : DatabaseTestsBase() {
 
     @Test
     fun testGettingColumnMetadata() {
-        withDb (TestDB.H2){
+        withDb(TestDB.H2) {
             SchemaUtils.create(People)
 
             val columnMetadata = connection.metadata {
                 requireNotNull(columns(People)[People])
             }.toSet()
             val expected = setOf(
-                    ColumnMetadata("ID", Types.BIGINT, false, 19),
-                    ColumnMetadata("NAME", Types.VARCHAR, true, 80)
+                ColumnMetadata("ID", Types.BIGINT, false, 19, true),
+                ColumnMetadata("NAME", Types.VARCHAR, true, 80, false)
             )
             assertEquals(expected, columnMetadata)
+        }
+    }
+
+    // GitHub issue #838
+    @Test
+    @Suppress("unused")
+    fun testTableConstraints() {
+        val parent = object : LongIdTable("parent") {
+            val scale = integer("scale").uniqueIndex()
+        }
+        val child = object : LongIdTable("child") {
+            val scale = reference("scale", parent.scale)
+        }
+        withTables(listOf(TestDB.MYSQL), child) {
+            val constraints = connection.metadata {
+                tableConstraints(listOf(child))
+            }
+            assertEquals(2, constraints.keys.size)
         }
     }
 }

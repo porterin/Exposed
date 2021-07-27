@@ -14,6 +14,7 @@ import org.jetbrains.exposed.sql.vendors.MysqlDialect
 import org.junit.Test
 import java.math.BigDecimal
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 
 class InsertTests : DatabaseTestsBase() {
     @Test
@@ -27,13 +28,13 @@ class InsertTests : DatabaseTestsBase() {
                 it[idTable.name] = "1"
             }
 
-            assertEquals(1, idTable.selectAll().count())
+            assertEquals(1L, idTable.selectAll().count())
 
             idTable.insertAndGetId {
                 it[idTable.name] = "2"
             }
 
-            assertEquals(2, idTable.selectAll().count())
+            assertEquals(2L, idTable.selectAll().count())
 
             assertFailAndRollback("Unique constraint") {
                 idTable.insertAndGetId {
@@ -44,7 +45,7 @@ class InsertTests : DatabaseTestsBase() {
     }
 
     private val insertIgnoreSupportedDB = TestDB.values().toList() -
-            listOf(TestDB.SQLITE, TestDB.MYSQL, TestDB.H2_MYSQL, TestDB.POSTGRESQL)
+        listOf(TestDB.SQLITE, TestDB.MYSQL, TestDB.H2_MYSQL, TestDB.POSTGRESQL, TestDB.POSTGRESQLNG)
 
     @Test
     fun testInsertIgnoreAndGetId01() {
@@ -52,19 +53,18 @@ class InsertTests : DatabaseTestsBase() {
             val name = varchar("foo", 10).uniqueIndex()
         }
 
-
         withTables(insertIgnoreSupportedDB, idTable) {
             idTable.insertIgnoreAndGetId {
                 it[idTable.name] = "1"
             }
 
-            assertEquals(1, idTable.selectAll().count())
+            assertEquals(1L, idTable.selectAll().count())
 
             idTable.insertIgnoreAndGetId {
                 it[idTable.name] = "2"
             }
 
-            assertEquals(2, idTable.selectAll().count())
+            assertEquals(2L, idTable.selectAll().count())
 
             val idNull = idTable.insertIgnoreAndGetId {
                 it[idTable.name] = "2"
@@ -75,13 +75,54 @@ class InsertTests : DatabaseTestsBase() {
     }
 
     @Test
+    fun `test insert and get id when column has different name and get value by id column`() {
+        val testTableWithId = object : IdTable<Int>("testTableWithId") {
+            val code = integer("code")
+            override val id: Column<EntityID<Int>> = code.entityId()
+        }
+
+        withTables(testTableWithId) {
+            val id1 = testTableWithId.insertAndGetId {
+                it[code] = 1
+            }
+            assertNotNull(id1)
+            assertEquals(1, id1.value)
+
+            val id2 = testTableWithId.insert {
+                it[code] = 2
+            } get testTableWithId.id
+            assertNotNull(id2)
+            assertEquals(2, id2.value)
+        }
+    }
+
+    @Test
+    fun `test id and column have different names and get value by original column`() {
+        val exampleTable = object : IdTable<String>("test_id_and_column_table") {
+            val exampleColumn = varchar("example_column", 200)
+            override val id = exampleColumn.entityId()
+        }
+
+        withTables(exampleTable) {
+            val value = "value"
+            exampleTable.insert {
+                it[exampleColumn] = value
+            }
+
+            val resultValues: List<String> = exampleTable.selectAll().map { it[exampleTable.exampleColumn] }
+
+            assertEquals(value, resultValues.first())
+        }
+    }
+
+    @Test
     fun testInsertIgnoreAndGetIdWithPredefinedId() {
         val idTable = object : IntIdTable("tmp") {
             val name = varchar("foo", 10).uniqueIndex()
         }
 
         val insertIgnoreSupportedDB = TestDB.values().toList() -
-                listOf(TestDB.SQLITE, TestDB.MYSQL, TestDB.H2_MYSQL, TestDB.POSTGRESQL)
+            listOf(TestDB.SQLITE, TestDB.MYSQL, TestDB.H2_MYSQL, TestDB.POSTGRESQL, TestDB.POSTGRESQLNG)
         withTables(insertIgnoreSupportedDB, idTable) {
             val id = idTable.insertIgnore {
                 it[idTable.id] = EntityID(1, idTable)
@@ -90,7 +131,6 @@ class InsertTests : DatabaseTestsBase() {
             assertEquals(1, id.value)
         }
     }
-
 
     @Test
     fun testBatchInsert01() {
@@ -112,7 +152,7 @@ class InsertTests : DatabaseTestsBase() {
             }
 
             assertEquals(userNamesWithCityIds.size, generatedIds.size)
-            assertEquals(userNamesWithCityIds.size, users.select { users.name inList userNamesWithCityIds.map { it.first } }.count())
+            assertEquals(userNamesWithCityIds.size.toLong(), users.select { users.name inList userNamesWithCityIds.map { it.first } }.count())
         }
     }
 
@@ -127,8 +167,10 @@ class InsertTests : DatabaseTestsBase() {
     }
 
     object LongIdTable : Table() {
-        val id = long("id").autoIncrement("long_id_seq").primaryKey()
+        val id = long("id").autoIncrement()
         val name = text("name")
+
+        override val primaryKey = PrimaryKey(id)
     }
 
     @Test
@@ -191,12 +233,11 @@ class InsertTests : DatabaseTestsBase() {
         fun expression(value: String) = stringLiteral(value).trim().substring(2, 4)
 
         fun verify(value: String) {
-            val row = tbl.select{ tbl.string eq value }.single()
+            val row = tbl.select { tbl.string eq value }.single()
             assertEquals(row[tbl.string], value)
         }
 
         withTables(tbl) {
-            addLogger(StdOutSqlLogger)
             tbl.insert {
                 it[string] = expression(" _exp1_ ")
             }
@@ -219,14 +260,40 @@ class InsertTests : DatabaseTestsBase() {
         }
     }
 
-    private object OrderedDataTable : IntIdTable()
-    {
+    @Test fun testInsertWithColumnExpression() {
+
+        val tbl1 = object : IntIdTable("testInsert1") {
+            val string1 = varchar("stringCol", 20)
+        }
+        val tbl2 = object : IntIdTable("testInsert2") {
+            val string2 = varchar("stringCol", 20).nullable()
+        }
+
+        fun verify(value: String) {
+            val row = tbl2.select { tbl2.string2 eq value }.single()
+            assertEquals(row[tbl2.string2], value)
+        }
+
+        withTables(tbl1, tbl2) {
+            val id = tbl1.insertAndGetId {
+                it[string1] = " _exp1_ "
+            }
+
+            val expr1 = tbl1.string1.trim().substring(2, 4)
+            tbl2.insert {
+                it[string2] = wrapAsExpression(tbl1.slice(expr1).select { tbl1.id eq id })
+            }
+
+            verify("exp1")
+        }
+    }
+
+    private object OrderedDataTable : IntIdTable() {
         val name = text("name")
         val order = integer("order")
     }
 
-    class OrderedData(id : EntityID<Int>) : IntEntity(id)
-    {
+    class OrderedData(id: EntityID<Int>) : IntEntity(id) {
         companion object : IntEntityClass<OrderedData>(OrderedDataTable)
 
         var name by OrderedDataTable.name
@@ -265,7 +332,7 @@ class InsertTests : DatabaseTestsBase() {
                 it[table.emoji] = emojis
             }
 
-            assertEquals(1, table.selectAll().count())
+            assertEquals(1L, table.selectAll().count())
         }
     }
 
@@ -275,11 +342,25 @@ class InsertTests : DatabaseTestsBase() {
         }
         val emojis = "\uD83D\uDC68\uD83C\uDFFF\u200D\uD83D\uDC69\uD83C\uDFFF\u200D\uD83D\uDC67\uD83C\uDFFF\u200D\uD83D\uDC66\uD83C\uDFFF"
 
-        withTables(listOf(TestDB.SQLITE, TestDB.H2, TestDB.H2_MYSQL, TestDB.POSTGRESQL), table) {
-            expectException<IllegalStateException> {
+        withTables(listOf(TestDB.SQLITE, TestDB.H2, TestDB.H2_MYSQL, TestDB.POSTGRESQL, TestDB.POSTGRESQLNG), table) {
+            expectException<IllegalArgumentException> {
                 table.insert {
                     it[table.emoji] = emojis
                 }
+            }
+        }
+    }
+
+    @Test(expected = java.lang.IllegalArgumentException::class)
+    fun `test that column length checked on insert`() {
+        val stringTable = object : IntIdTable("StringTable") {
+            val name = varchar("name", 10)
+        }
+
+        withTables(stringTable) {
+            val veryLongString = "1".repeat(255)
+            stringTable.insert {
+                it[name] = veryLongString
             }
         }
     }

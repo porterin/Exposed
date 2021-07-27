@@ -9,25 +9,43 @@ import org.jetbrains.exposed.sql.statements.api.ExposedConnection
 import org.jetbrains.exposed.sql.statements.api.ExposedSavepoint
 import java.sql.SQLException
 
-class ThreadLocalTransactionManager(private val db: Database,
-                                    @Volatile override var defaultIsolationLevel: Int,
-                                    @Volatile override var defaultRepetitionAttempts: Int) : TransactionManager {
+class ThreadLocalTransactionManager(
+    private val db: Database,
+    @Volatile override var defaultRepetitionAttempts: Int
+) : TransactionManager {
+
+    @Volatile override var defaultIsolationLevel: Int = -1
+        get() {
+            if (field == -1) {
+                field = Database.getDefaultIsolationLevel(db)
+            }
+            return field
+        }
 
     val threadLocal = ThreadLocal<Transaction>()
 
     override fun newTransaction(isolation: Int, outerTransaction: Transaction?): Transaction =
-        (outerTransaction?.takeIf { !db.useNestedTransactions } ?: Transaction(
-            ThreadLocalTransaction(
-                db = db,
-                transactionIsolation = outerTransaction?.transactionIsolation ?: isolation,
-                threadLocal = threadLocal,
-                outerTransaction = outerTransaction
+        (
+            outerTransaction?.takeIf { !db.useNestedTransactions } ?: Transaction(
+                ThreadLocalTransaction(
+                    db = db,
+                    transactionIsolation = outerTransaction?.transactionIsolation ?: isolation,
+                    threadLocal = threadLocal,
+                    outerTransaction = outerTransaction
+                )
             )
-        )).apply {
-            threadLocal.set(this)
+            ).apply {
+            bindTransactionToThread(this)
         }
 
     override fun currentOrNull(): Transaction? = threadLocal.get()
+
+    override fun bindTransactionToThread(transaction: Transaction?) {
+        if (transaction != null)
+            threadLocal.set(transaction)
+        else
+            threadLocal.remove()
+    }
 
     private class ThreadLocalTransaction(
         override val db: Database,
@@ -51,7 +69,6 @@ class ThreadLocalTransactionManager(private val db: Database,
         private var savepoint: ExposedSavepoint? = if (useSavePoints) {
             connection.setSavepoint(savepointName)
         } else null
-
 
         override fun commit() {
             if (connectionLazy.isInitialized()) {
@@ -93,7 +110,7 @@ class ThreadLocalTransactionManager(private val db: Database,
             get() {
                 var nestedLevel = 0
                 var currenTransaction = outerTransaction
-                while(currenTransaction?.outerTransaction != null) {
+                while (currenTransaction?.outerTransaction != null) {
                     nestedLevel++
                     currenTransaction = currenTransaction.outerTransaction
                 }
@@ -114,7 +131,7 @@ fun <T> transaction(transactionIsolation: Int, repetitionAttempts: Int, db: Data
         val transaction = outerManager.newTransaction(transactionIsolation, outer)
         try {
             transaction.statement().also {
-                if(outer.db.useNestedTransactions)
+                if (outer.db.useNestedTransactions)
                     transaction.commit()
             }
         } finally {
@@ -127,7 +144,7 @@ fun <T> transaction(transactionIsolation: Int, repetitionAttempts: Int, db: Data
             try {
                 TransactionManager.resetCurrent(existingForDb)
                 transaction.statement().also {
-                    if(db.useNestedTransactions)
+                    if (db.useNestedTransactions)
                         transaction.commit()
                 }
             } finally {
@@ -138,14 +155,14 @@ fun <T> transaction(transactionIsolation: Int, repetitionAttempts: Int, db: Data
 }
 
 fun <T> inTopLevelTransaction(
-        transactionIsolation: Int,
-        repetitionAttempts: Int,
-        db: Database? = null,
-        outerTransaction: Transaction? = null,
-        statement: Transaction.() -> T
+    transactionIsolation: Int,
+    repetitionAttempts: Int,
+    db: Database? = null,
+    outerTransaction: Transaction? = null,
+    statement: Transaction.() -> T
 ): T {
 
-    fun run():T {
+    fun run(): T {
         var repetitions = 0
 
         val outerManager = outerTransaction?.db.transactionManager.takeIf { it.currentOrNull() != null }
@@ -159,17 +176,7 @@ fun <T> inTopLevelTransaction(
                 transaction.commit()
                 return answer
             } catch (e: SQLException) {
-                val exposedSQLException = e as? ExposedSQLException
-                val queriesToLog = exposedSQLException?.causedByQueries()?.joinToString(";\n")
-                    ?: "${transaction.currentStatement}"
-                val message = "Transaction attempt #$repetitions failed: ${e.message}. Statement(s): $queriesToLog"
-                exposedSQLException?.contexts?.forEach {
-                    transaction.interceptors.filterIsInstance<SqlLogger>().forEach { logger ->
-                        logger.log(it, transaction)
-                    }
-                }
-                exposedLogger.warn(message, e)
-                transaction.rollbackLoggingException { exposedLogger.warn("Transaction rollback failed: ${it.message}. See previous log line for statement", it) }
+                handleSQLException(e, transaction, repetitions)
                 repetitions++
                 if (repetitions >= repetitionAttempts) {
                     throw e
@@ -180,17 +187,7 @@ fun <T> inTopLevelTransaction(
                 throw e
             } finally {
                 TransactionManager.resetCurrent(outerManager)
-                val currentStatement = transaction.currentStatement
-                try {
-                    currentStatement?.let {
-                        it.closeIfPossible()
-                        transaction.currentStatement = null
-                    }
-                    transaction.closeExecutedStatements()
-                } catch (e: Exception) {
-                    exposedLogger.warn("Statements close failed", e)
-                }
-                transaction.closeLoggingException { exposedLogger.warn("Transaction close failed: ${it.message}. Statement: $currentStatement", it) }
+                closeStatementsAndConnection(transaction)
             }
         }
     }
@@ -200,12 +197,39 @@ fun <T> inTopLevelTransaction(
     }
 }
 
-internal fun <T> keepAndRestoreTransactionRefAfterRun(db: Database? = null, block: () -> T): T {
-    val manager = db.transactionManager as? ThreadLocalTransactionManager
-    val currentTransaction = manager?.currentOrNull()
+private fun <T> keepAndRestoreTransactionRefAfterRun(db: Database? = null, block: () -> T): T {
+    val manager = db.transactionManager
+    val currentTransaction = manager.currentOrNull()
     return try {
         block()
     } finally {
-        manager?.threadLocal?.set(currentTransaction)
+        manager.bindTransactionToThread(currentTransaction)
     }
+}
+
+internal fun handleSQLException(e: SQLException, transaction: Transaction, repetitions: Int) {
+    val exposedSQLException = e as? ExposedSQLException
+    val queriesToLog = exposedSQLException?.causedByQueries()?.joinToString(";\n") ?: "${transaction.currentStatement}"
+    val message = "Transaction attempt #$repetitions failed: ${e.message}. Statement(s): $queriesToLog"
+    exposedSQLException?.contexts?.forEach {
+        transaction.interceptors.filterIsInstance<SqlLogger>().forEach { logger ->
+            logger.log(it, transaction)
+        }
+    }
+    exposedLogger.warn(message, e)
+    transaction.rollbackLoggingException { exposedLogger.warn("Transaction rollback failed: ${it.message}. See previous log line for statement", it) }
+}
+
+internal fun closeStatementsAndConnection(transaction: Transaction) {
+    val currentStatement = transaction.currentStatement
+    try {
+        currentStatement?.let {
+            it.closeIfPossible()
+            transaction.currentStatement = null
+        }
+        transaction.closeExecutedStatements()
+    } catch (e: Exception) {
+        exposedLogger.warn("Statements close failed", e)
+    }
+    transaction.closeLoggingException { exposedLogger.warn("Transaction close failed: ${it.message}. Statement: $currentStatement", it) }
 }

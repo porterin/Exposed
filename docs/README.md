@@ -1,31 +1,48 @@
+<img src="./logo.png" alt="Exposed" width="315" />
+
 [![JetBrains team project](https://jb.gg/badges/team.svg)](https://confluence.jetbrains.com/display/ALL/JetBrains+on+GitHub)
 [![Kotlinlang Slack Channel](https://img.shields.io/badge/slack-@kotlinlang/exposed-yellow.svg?logo=slack?style=flat)](https://kotlinlang.slack.com/archives/C0CG7E0A1)
-[![TC Build status](https://teamcity.jetbrains.com/app/rest/builds/buildType:(id:KotlinTools_Exposed_Build)/statusIcon)](https://teamcity.jetbrains.com/viewType.html?buildTypeId=KotlinTools_Exposed_Build&guest=1) 
-[![Download](https://api.bintray.com/packages/kotlin/exposed/exposed-core/images/download.svg) ](https://bintray.com/kotlin/exposed/exposed-core/_latestVersion)
+[![TC Build status](https://teamcity.jetbrains.com/app/rest/builds/buildType:(id:KotlinTools_Exposed_Build)/statusIcon)](https://teamcity.jetbrains.com/viewType.html?buildTypeId=KotlinTools_Exposed_Build&guest=1)
+[![Maven Central](https://maven-badges.herokuapp.com/maven-central/org.jetbrains.exposed/exposed-core/badge.svg)](https://maven-badges.herokuapp.com/maven-central/org.jetbrains.exposed/exposed-core)
 [![GitHub License](https://img.shields.io/badge/license-Apache%20License%202.0-blue.svg?style=flat)](https://www.apache.org/licenses/LICENSE-2.0)
 
-Exposed - Kotlin SQL Library
-==================
+Welcome to **Exposed**, an ORM framework for 
+[Kotlin](https://github.com/JetBrains/kotlin).
+Exposed offers two levels of database access: typesafe SQL
+wrapping DSL and lightweight data access objects.
+Our official mascot is Cuttlefish, which is best known for its
+outstanding mimicry abilities letting it blend seamlessly in
+any environment. Just like our mascot, Exposed can mimic a variety
+of database engines and help you build database applications
+without hard dependencies on any specific database engine, and
+switch between them with very little or no changes in your code.
 
-_Exposed_ is a lightweight SQL library written for [Kotlin](https://github.com/JetBrains/kotlin) language.
-It does have two layers of database access: typesafe SQL wrapping DSL and lightweight data access objects.
+## Supported Databases
 
-Exposed is currently available for maven/gradle builds at https://bintray.com/kotlin/exposed/exposed/view#
-
-You can inspect project [roadmap](ROADMAP.md) to see what's coming next or look into [Change log](ChangeLog.md) for list of bug fixes and improvements.
-
-## Dialects
-
-Currently supported database dialects:
-* PostgreSQL
+* H2
 * MySQL
 * MariaDB
 * [Oracle](ORACLE.md)
-* SQLite
-* H2
+* PostgreSQL
+* PostgreSQL using the [pgjdbc-ng](https://github.com/impossibl/pgjdbc-ng) JDBC driver
 * [SQL Server](SQLServer.md)
+* SQLite
 
-## SQL DSL sample:
+## Links
+
+Exposed is currently available for **maven/gradle builds** at [Maven Central](https://search.maven.org/search?q=g:org.jetbrains.exposed) (read [Getting started](https://github.com/JetBrains/Exposed/wiki/Getting-Started#download)).
+
+* [Wiki](https://github.com/JetBrains/Exposed/wiki) with examples and docs. 
+* [Roadmap](ROADMAP.md) to see what's coming next.
+* [Change log](ChangeLog.md) of improvements and bug fixes.
+
+If you have any questions feel free to ask at our [#exposed](https://kotlinlang.slack.com/archives/C0CG7E0A1) channel on [kotlinlang.slack.com](https://kotlinlang.slack.com).
+
+
+## Examples
+
+### SQL DSL
+
 ```kotlin
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -145,11 +162,12 @@ fun main() {
 
         SchemaUtils.drop (Users, Cities)
     }
+}
 
 ```
 
-Outputs:
-```
+Generated SQL:
+```sql
     SQL: CREATE TABLE IF NOT EXISTS Cities (id INT AUTO_INCREMENT NOT NULL, name VARCHAR(50) NOT NULL, CONSTRAINT PK_Cities_ID PRIMARY KEY (id))
     SQL: CREATE TABLE IF NOT EXISTS Users (id VARCHAR(10) NOT NULL, name VARCHAR(50) NOT NULL, city_id INT NULL, CONSTRAINT PK_User_ID PRIMARY KEY (id))
     SQL: ALTER TABLE Users ADD FOREIGN KEY (city_id) REFERENCES Cities(id)
@@ -182,10 +200,12 @@ Outputs:
     SQL: DROP TABLE Cities
 ```
 
-## DAO sample
+### DAO
+
 ```kotlin
 import org.jetbrains.exposed.dao.*
 import org.jetbrains.exposed.dao.id.EntityID
+import org.jetbrains.exposed.dao.id.IntIdTable
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
 
@@ -255,8 +275,8 @@ fun main() {
 }
 ```
 
-Outputs:
-```
+Generated SQL:
+```sql
     SQL: CREATE TABLE IF NOT EXISTS Cities (id INT AUTO_INCREMENT NOT NULL, name VARCHAR(50) NOT NULL, CONSTRAINT pk_Cities PRIMARY KEY (id))
     SQL: CREATE TABLE IF NOT EXISTS Users (id INT AUTO_INCREMENT NOT NULL, name VARCHAR(50) NOT NULL, city INT NOT NULL, age INT NOT NULL, CONSTRAINT pk_Users PRIMARY KEY (id))
     SQL: CREATE INDEX Users_name ON Users (name)
@@ -271,5 +291,6 @@ Outputs:
     Adults: b, c
 ```
 
-Find more examples and documentation on the [wiki](https://github.com/JetBrains/Exposed/wiki). 
-If you have any questions feel free to ask at our [#exposed](https://kotlinlang.slack.com/archives/C0CG7E0A1) channel on [kotlinlang.slack.com](https://kotlinlang.slack.com).
+## License
+
+Apache License, Version 2.0, ([LICENSE](LICENSE.txt) or https://www.apache.org/licenses/LICENSE-2.0)
