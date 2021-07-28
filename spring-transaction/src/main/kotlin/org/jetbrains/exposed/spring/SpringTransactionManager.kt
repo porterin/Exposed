@@ -4,7 +4,6 @@ import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.Transaction
 import org.jetbrains.exposed.sql.statements.api.ExposedConnection
 import org.jetbrains.exposed.sql.statements.jdbc.JdbcConnectionImpl
-import org.jetbrains.exposed.sql.transactions.DEFAULT_ISOLATION_LEVEL
 import org.jetbrains.exposed.sql.transactions.DEFAULT_REPETITION_ATTEMPTS
 import org.jetbrains.exposed.sql.transactions.TransactionInterface
 import org.jetbrains.exposed.sql.transactions.TransactionManager
@@ -17,10 +16,9 @@ import org.springframework.transaction.support.DefaultTransactionStatus
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import javax.sql.DataSource
 
-
-class SpringTransactionManager(private val _dataSource: DataSource,
-                               @Volatile override var defaultIsolationLevel: Int = DEFAULT_ISOLATION_LEVEL,
-                               @Volatile override var defaultRepetitionAttempts: Int = DEFAULT_REPETITION_ATTEMPTS
+class SpringTransactionManager(
+    _dataSource: DataSource,
+    @Volatile override var defaultRepetitionAttempts: Int = DEFAULT_REPETITION_ATTEMPTS
 ) : DataSourceTransactionManager(_dataSource), TransactionManager {
 
     init {
@@ -29,18 +27,35 @@ class SpringTransactionManager(private val _dataSource: DataSource,
 
     private val db = Database.connect(_dataSource) { this }
 
+    @Volatile override var defaultIsolationLevel: Int = -1
+        get() {
+            if (field == -1) {
+                field = Database.getDefaultIsolationLevel(db)
+            }
+            return field
+        }
+
+    private val springTxKey = "SPRING_TX_KEY"
+
     override fun doBegin(transaction: Any, definition: TransactionDefinition) {
         super.doBegin(transaction, definition)
 
-        if (TransactionSynchronizationManager.hasResource(_dataSource)) {
+        if (TransactionSynchronizationManager.hasResource(obtainDataSource())) {
             currentOrNull() ?: initTransaction()
+        }
+        if (!TransactionSynchronizationManager.hasResource(springTxKey)) {
+            TransactionSynchronizationManager.bindResource(springTxKey, transaction)
         }
     }
 
     override fun doCleanupAfterCompletion(transaction: Any) {
         super.doCleanupAfterCompletion(transaction)
-        if (!TransactionSynchronizationManager.hasResource(_dataSource)) {
+        if (!TransactionSynchronizationManager.hasResource(obtainDataSource())) {
             TransactionSynchronizationManager.unbindResourceIfPossible(this)
+            TransactionSynchronizationManager.unbindResource(springTxKey)
+        }
+        if (TransactionSynchronizationManager.isSynchronizationActive() && TransactionSynchronizationManager.getSynchronizations().isEmpty()) {
+            TransactionSynchronizationManager.clearSynchronization()
         }
         TransactionManager.resetCurrent(null)
     }
@@ -67,9 +82,7 @@ class SpringTransactionManager(private val _dataSource: DataSource,
     }
 
     override fun newTransaction(isolation: Int, outerTransaction: Transaction?): Transaction {
-        val tDefinition = dataSource?.connection?.transactionIsolation?.takeIf { it != isolation }?.let {
-                DefaultTransactionDefinition().apply { isolationLevel = isolation }
-        }
+        val tDefinition = DefaultTransactionDefinition().apply { isolationLevel = isolation }
 
         getTransaction(tDefinition)
 
@@ -77,7 +90,7 @@ class SpringTransactionManager(private val _dataSource: DataSource,
     }
 
     private fun initTransaction(): Transaction {
-        val connection = (TransactionSynchronizationManager.getResource(_dataSource) as ConnectionHolder).connection
+        val connection = (TransactionSynchronizationManager.getResource(obtainDataSource()) as ConnectionHolder).connection
 
         val transactionImpl = SpringTransaction(JdbcConnectionImpl(connection), db, defaultIsolationLevel, currentOrNull())
         TransactionManager.resetCurrent(this)
@@ -87,23 +100,40 @@ class SpringTransactionManager(private val _dataSource: DataSource,
     }
 
     override fun currentOrNull(): Transaction? = TransactionSynchronizationManager.getResource(this) as Transaction?
+    override fun bindTransactionToThread(transaction: Transaction?) {
+        if (transaction != null) {
+            bindResourceForSure(this, transaction)
+        } else {
+            TransactionSynchronizationManager.unbindResourceIfPossible(this)
+        }
+    }
 
-    private class SpringTransaction(override val connection: ExposedConnection<*>, override val db: Database, override val transactionIsolation: Int, override val outerTransaction: Transaction?) : TransactionInterface {
+    private fun bindResourceForSure(key: Any, value: Any) {
+        TransactionSynchronizationManager.unbindResourceIfPossible(key)
+        TransactionSynchronizationManager.bindResource(key, value)
+    }
+
+    private inner class SpringTransaction(
+        override val connection: ExposedConnection<*>,
+        override val db: Database,
+        override val transactionIsolation: Int,
+        override val outerTransaction: Transaction?
+    ) : TransactionInterface {
 
         override fun commit() {
-            connection.run {
-                if (!autoCommit) {
-                    commit()
-                }
-            }
+            connection.commit()
         }
 
         override fun rollback() {
             connection.rollback()
         }
 
-        override fun close() { }
-
+        override fun close() {
+            if (TransactionSynchronizationManager.isActualTransactionActive()) {
+                TransactionSynchronizationManager.getResource(springTxKey)?.let { springTx ->
+                    this@SpringTransactionManager.doCleanupAfterCompletion(springTx)
+                }
+            }
+        }
     }
-
 }

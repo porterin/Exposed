@@ -1,4 +1,4 @@
-import tanvd.kosogor.proxy.publishJar
+import org.jetbrains.exposed.gradle.Versions
 
 plugins {
     kotlin("jvm") apply true
@@ -6,19 +6,19 @@ plugins {
 }
 
 repositories {
-    jcenter()
+    mavenCentral()
 }
 
 dependencies {
     api(kotlin("stdlib"))
     api(kotlin("reflect"))
-    api("org.jetbrains.kotlinx", "kotlinx-coroutines-core", "1.3.3")
+    api("org.jetbrains.kotlinx", "kotlinx-coroutines-core", Versions.kotlinCoroutines)
     api("org.slf4j", "slf4j-api", "1.7.25")
     compileOnly("com.h2database", "h2", "1.4.199")
 }
 
 group = "in.porter.exposed"
-version = "0.21.1.1"
+version = "0.32.1.1-SN"
 
 val sourceJar = task("sourceJar", Jar::class) {
     dependsOn(JavaPlugin.CLASSES_TASK_NAME)

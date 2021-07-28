@@ -15,9 +15,13 @@ import java.sql.PreparedStatement
 class JdbcConnectionImpl(override val connection: Connection) : ExposedConnection<Connection> {
 
     // Oracle driver could throw excpection on catalog
-    override val catalog: String by lazy {
-        try { connection.catalog } catch (_: Exception) { null } ?: connection.metaData.userName ?: ""
-    }
+    override var catalog: String
+        get() = try { connection.catalog } catch (_: Exception) { null } ?: connection.metaData.userName ?: ""
+        set(value) { try { connection.catalog = value } catch (_: Exception) {} }
+
+    override var schema: String
+        get() = try { connection.schema } catch (_: Exception) { "" }
+        set(value) { try { connection.schema = value } catch (_: Exception) {} }
 
     override fun commit() {
         connection.commit()
@@ -46,7 +50,7 @@ class JdbcConnectionImpl(override val connection: Connection) : ExposedConnectio
 
     override fun <T> metadata(body: ExposedDatabaseMetadata.() -> T): T = metadata.body()
 
-    override fun prepareStatement(sql: String, returnKeys: Boolean) : PreparedStatementApi {
+    override fun prepareStatement(sql: String, returnKeys: Boolean): PreparedStatementApi {
         val generated = if (returnKeys)
             PreparedStatement.RETURN_GENERATED_KEYS
         else
