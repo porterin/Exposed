@@ -53,7 +53,7 @@ object PsqlTestContainer {
   }, Clock.SYSTEM)
 
   val dataSource = HikariDataSource(hikariConfig).apply {
-//    metricRegistry = meterRegistry
+    metricRegistry = meterRegistry
   }
 
   val db: Database =
