@@ -1,11 +1,19 @@
 package org.jetbrains.exposed.sql.transactions.experimental
 
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.ThreadContextElement
+import kotlinx.coroutines.async
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.Transaction
 import org.jetbrains.exposed.sql.exposedLogger
-import org.jetbrains.exposed.sql.transactions.*
 import org.slf4j.LoggerFactory
+import org.jetbrains.exposed.sql.transactions.TransactionManager
+import org.jetbrains.exposed.sql.transactions.closeStatementsAndConnection
+import org.jetbrains.exposed.sql.transactions.handleSQLException
+import org.jetbrains.exposed.sql.transactions.rollbackLoggingException
+import org.jetbrains.exposed.sql.transactions.transactionManager
 import java.sql.SQLException
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
@@ -113,6 +121,7 @@ private suspend fun <T> withTransactionScope(
 
         return TransactionScope(tx, newContext + element).body()
     }
+
     val sameTransaction = currentScope?.holdsSameTransaction(currentTransaction) == true
     val sameContext = context == coroutineContext
     return when {
@@ -127,6 +136,7 @@ private fun <T> TransactionScope.suspendedTransactionAsyncInternal(
     statement: suspend Transaction.() -> T
 ): Deferred<T> = async {
     val transaction = tx.value
+    @Suppress("TooGenericExceptionCaught")
     try {
         transaction.statement().apply {
             if (shouldCommit) transaction.commit()

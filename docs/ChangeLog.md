@@ -1,3 +1,53 @@
+# 0.34.1
+Infrastructure:
+* Kotlin 1.5.30
+
+Features:
+* `Op.nullOp()` function added to allow set or compare with `NULL` ([#1315](https://github.com/JetBrains/Exposed/issues/1315))
+* [Spring Boot] Enable sql query logging to stdout with `spring.exposed.show-sql` configuration parameter
+* `Table.Dual` introduced to allow queries without the real tables
+* `Table.batchReplace` function similar to `Table.batchInsert` added by [pilotclass](https://github.com/pilotclass)
+* Column default change detected in `SchemaUtils.addMissingColumnsStatements` with help of [spand](https://github.com/spand) 
+
+Bug Fixes:
+* [PostgreSQL] `GroupConcat` with distinct fails ([#1313](https://github.com/JetBrains/Exposed/issues/1313)) 
+* `UpdateBuilder` inconsistently handles value set check 
+* Empty update statement causes SQL Syntax error ([#1241](https://github.com/JetBrains/Exposed/issues/1241))
+* Don't call `super.equals` on `Column.equals` to prevent "toString" comparing.  
+* [Oracle] `count()` fails on `Union` fixed by [dakriy](https://github.com/dakriy), also `AS` keyword was removed from Aliases  
+* [SQLServer]Many to many relationship update breaks when updating from exposed 0.26.2 to 0.27.1 ([#1319](https://github.com/JetBrains/Exposed/issues/1319))
+
+Performance:
+* A lot of low-level improvements in different places
+
+# 0.33.1
+Infrastructure:
+* Kotlin 1.5.21
+* Kotlin Coroutines 1.5.1
+* kotlinter replaced with Detekt. Many thanks to [BorzdeG](https://github.com/BorzdeG) for PR 
+
+Breaking Changes:
+* `EntityCache` internal representation was reworked to lower overhead on cache operations and to create more O(1) 
+when working with references. `EntityCache.inserts` and `EntityCache.referrers` fields are not publicly available anymore. 
+
+Features:
+* Different math and trigonometrical functions were added. Check `org.jetbrains.exposed.sql.functions.math` package
+* Bitwise AND, OR and, XOR were added by [Max Rumpf](https://github.com/Maxr1998)
+* `PrepareStatement` can be cancelled, thanks [Alex Shubert](https://github.com/lure) for supporting it
+* `ForeignKeyConstraint.customFkName` was added by [spand](https://github.com/spand)
+* All types of joins now accepts `additionalConstraint` lambda (PR from [spand](https://github.com/spand))
+* `InsertStatement` now stores number of inserted rows in `insertedCount` field ([#851](https://github.com/JetBrains/Exposed/issues/851))
+* `batchInsert` function now can be called on `Sequences`. Feature added by [Philip Wedemann](https://github.com/hfhbd) 
+
+Bug Fixes:
+* [MySQL/MariaDB] Restore old 0000-00-00 00:00:00 as null behavior for Mysql and MariaDb (PR from [spand](https://github.com/spand)).
+* `datetime` column looses nanos part ([#1028](https://github.com/JetBrains/Exposed/issues/1028))
+* Setting value for the same column multiple times in UpdateBuilder fails ([#1177](https://github.com/JetBrains/Exposed/issues/1177))
+* [SQLite] `primaryKey` override ignored ([#1258]((https://github.com/JetBrains/Exposed/issues/1258))
+* Transaction can be unexpectedly initialized when working with coroutines
+* [PostgreSQL] `REAL` type will be used instead of `FLOAT8` for `float` column. Thanks [Philip Wedemann](https://github.com/hfhbd) for fix
+* [Oracle] `TIME` is not supported on Oracle, mimic it with datetime type
+
 # 0.32.1
 Infrastructure:
 * Kotlin 1.5.10
@@ -92,7 +142,7 @@ Bug fixes:
 * Fix for exposed-jodatime module to work with MySQL ConnectorJ 8.0.23
 
 # 0.28.1
-Broken Changes:
+Breaking Changes:
 * `referrersOn`/`optionalReferrersOn` is now have `cache=true` by default [1046](https://github.com/JetBrains/Exposed/issues/1046). 
   It should help to prevent excessive queries when reading referenced values withing the same transaction but may require more memory to store the cached values.
 * Default isolation level for PostgreSQL now set to `READ_COMMITTED`. PR by [uryyyyyyy](https://github.com/uryyyyyyy)  
@@ -241,7 +291,7 @@ Bug fixes:
 # 0.22.1
 Documentation on SQL functions was added by [Juan José González Abril](https://github.com/SackCastellon)
 
-Broken Changes:
+Breaking Changes:
 * Return type of `SizedIterable.count()` (and `Query.count()` as an inheritor) was changed from Int to Long to support very large tables. 
 
 Also, `offset` parameter of `SizedIterable.limit()` and `DeleteStatement` functions were changed accordingly. `limit` parameter stays untouched to be in sync with Kotlin `Collection.size`
@@ -320,7 +370,7 @@ Bug fixes:
 
 
 # 0.19.1
-Broken changes:
+Breaking Changes:
 * `EntityID`, `IdTable`, `IntIdTable`, `LongIdTable`, `UUIDTable` classes from `exposed-core` 
 were moved from `org.jetbrains.exposed.dao` to `org.jetbrains.exposed.dao.id` package along with `exposed-jodatime` module classes to support Java 9 module system.
 To help with migration, old classes were deprecated with proper `replaceWith` option. Read [migration guide](https://github.com/JetBrains/Exposed/wiki/Migration-Guide#migrating-to-019) for more details.
