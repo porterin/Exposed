@@ -38,6 +38,23 @@ dependencies {
     setupTestDriverDependencies(dialect) { group, artifactId, version ->
         testImplementation(group, artifactId, version)
     }
+
+    implementation(Libs.junit_jupiter_api)
+    implementation(Libs.junit_jupiter_engine)
+
+    implementation(Libs.mockito_core)
+    implementation(Libs.mockito_inline)
+    implementation(Libs.mockito_kotlin)
+    implementation(Libs.mockk)
+
+    implementation(Libs.kluent)
+
+    implementation(Libs.testContainers)
+    implementation(Libs.testContainersPostgresql)
+    implementation(Libs.testContainersJuniper)
+
+    implementation(Libs.hikariCP)
+    implementation(Libs.Micrometer.core)
 }
 
 tasks.withType(Test::class.java) {
