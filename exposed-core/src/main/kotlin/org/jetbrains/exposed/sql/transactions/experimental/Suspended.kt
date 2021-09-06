@@ -58,18 +58,19 @@ suspend fun <T> newSuspendedTransaction(
 ): T =
     withTransactionScope(context, null, db, transactionIsolation) {
         suspendedTransactionAsyncInternal(true, statement).await()
-        // .also { logger.debug("Execution {} newSuspendedTransaction in transaction: {} and connection: {} complete", jobId, txId, connectionCode) }
+//         .also { logger.debug { "Execution {} newSuspendedTransaction in transaction: {} and connection: {} complete", jobId, txId, connectionCode } }
     }
 
 suspend fun <T> Transaction.suspendedTransaction(context: CoroutineDispatcher? = null, statement: suspend Transaction.() -> T): T =
     withTransactionScope(context, this, db = null, transactionIsolation = null) {
         suspendedTransactionAsyncInternal(false, statement).await()
-        // .also { logger.debug("Execution {} suspendedTransaction in transaction: {} and connection: {} complete", jobId, txId, connectionCode) }
+//         .also { logger.debug("Execution {} suspendedTransaction in transaction: {} and connection: {} complete", jobId, txId, connectionCode) }
     }
 
 suspend fun <T> continueSuspendedTransaction(context: CoroutineDispatcher? = null, db: Database? = null, statement: suspend Transaction.() -> T): T {
     val currentTransaction = coroutineContext[TransactionScope]?.tx?.value
-    // logger.debug("continueSuspendTransaction called with transaction: {} and connection: {}", currentTransaction?.id, currentTransaction?.connection?.hashCode())
+//    logger.debug("continueSuspendTransaction called with transaction: {} and connection: {}", currentTransaction?.id, currentTransaction?.connection?.hashCode())
+
     return when (currentTransaction) {
         null -> newSuspendedTransaction(context, db, transactionIsolation = null, statement)
         else -> currentTransaction.suspendedTransaction(context, statement)
