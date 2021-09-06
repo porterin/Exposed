@@ -58,18 +58,37 @@ suspend fun <T> newSuspendedTransaction(
 ): T =
     withTransactionScope(context, null, db, transactionIsolation) {
         suspendedTransactionAsyncInternal(true, statement).await()
-//         .also { logger.debug { "Execution {} newSuspendedTransaction in transaction: {} and connection: {} complete", jobId, txId, connectionCode } }
+         .also {
+             if (logger.isDebugEnabled) {
+                 val txId = tx.value.id
+                 val jobId = this.hashCode()
+                 val connId = tx.value.connection.hashCode()
+                 logger.debug("Execution $jobId suspendedTransaction in transaction: $txId and connection: $connId complete")
+             }
+
+         }
     }
 
 suspend fun <T> Transaction.suspendedTransaction(context: CoroutineDispatcher? = null, statement: suspend Transaction.() -> T): T =
     withTransactionScope(context, this, db = null, transactionIsolation = null) {
         suspendedTransactionAsyncInternal(false, statement).await()
-//         .also { logger.debug("Execution {} suspendedTransaction in transaction: {} and connection: {} complete", jobId, txId, connectionCode) }
+         .also {
+            if (logger.isDebugEnabled) {
+                val txId = tx.value.id
+                val jobId = this.hashCode()
+                val connId = tx.value.connection.hashCode()
+                logger.debug("Execution $jobId suspendedTransaction in transaction: $txId and connection: $connId complete")
+            }
+         }
     }
 
 suspend fun <T> continueSuspendedTransaction(context: CoroutineDispatcher? = null, db: Database? = null, statement: suspend Transaction.() -> T): T {
     val currentTransaction = coroutineContext[TransactionScope]?.tx?.value
-//    logger.debug("continueSuspendTransaction called with transaction: {} and connection: {}", currentTransaction?.id, currentTransaction?.connection?.hashCode())
+    if (logger.isDebugEnabled) {
+        val txId = currentTransaction?.id
+        val connId = currentTransaction?.connection?.hashCode()
+        logger.debug("continueSuspendTransaction called with transaction: $txId and connection: $connId")
+    }
 
     return when (currentTransaction) {
         null -> newSuspendedTransaction(context, db, transactionIsolation = null, statement)
