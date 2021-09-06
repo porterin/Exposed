@@ -12,6 +12,8 @@ import org.jetbrains.exposed.sql.tests.shared.assertEquals
 import org.jetbrains.exposed.sql.tests.shared.assertFailAndRollback
 import org.jetbrains.exposed.sql.tests.shared.assertFalse
 import org.jetbrains.exposed.sql.tests.shared.assertTrue
+import org.jetbrains.exposed.sql.vendors.MysqlDialect
+import org.jetbrains.exposed.sql.vendors.OracleDialect
 import org.junit.Test
 import java.math.BigDecimal
 import java.sql.SQLException
@@ -185,6 +187,85 @@ class CreateMissingTablesAndColumnsTests : DatabaseTestsBase() {
     }
 
     @Test
+    fun testAddMissingColumnsStatementsChangeDefault() {
+        val t1 = object : Table("foo") {
+            val id = integer("idcol")
+            val col = integer("col").nullable()
+            val strcol = varchar("strcol", 255).nullable()
+
+            override val primaryKey = PrimaryKey(id)
+        }
+
+        val t2 = object : Table("foo") {
+            val id = integer("idcol")
+            val col = integer("col").default(1)
+            val strcol = varchar("strcol", 255).default("def")
+
+            override val primaryKey = PrimaryKey(id)
+        }
+
+        val excludeSettings = listOf(TestDB.SQLITE, TestDB.SQLSERVER)
+        val complexAlterTable = listOf(TestDB.POSTGRESQL, TestDB.POSTGRESQLNG, TestDB.ORACLE)
+        withDb(excludeSettings = excludeSettings) { testDb ->
+            try {
+                SchemaUtils.createMissingTablesAndColumns(t1)
+
+                val missingStatements = SchemaUtils.addMissingColumnsStatements(t2)
+
+                if (testDb !in complexAlterTable) {
+                    val alterColumnWord = when (currentDialectTest) {
+                        is MysqlDialect -> "MODIFY COLUMN"
+                        is OracleDialect -> "MODIFY"
+                        else -> "ALTER COLUMN"
+                    }
+                    val expected = setOf(
+                        "ALTER TABLE ${t2.nameInDatabaseCase()} $alterColumnWord ${t2.col.nameInDatabaseCase()} ${t2.col.columnType.sqlType()} DEFAULT 1 NOT NULL",
+                        "ALTER TABLE ${t2.nameInDatabaseCase()} $alterColumnWord ${t2.strcol.nameInDatabaseCase()} ${t2.strcol.columnType.sqlType()} DEFAULT 'def' NOT NULL",
+                    )
+                    assertEquals(expected, missingStatements.toSet())
+                } else {
+                    assertEquals(true, missingStatements.isNotEmpty())
+                }
+
+                missingStatements.forEach {
+                    exec(it)
+                }
+            } finally {
+                SchemaUtils.drop(t1)
+            }
+        }
+
+        withDb(excludeSettings = excludeSettings) { testDb ->
+            try {
+                SchemaUtils.createMissingTablesAndColumns(t2)
+
+                val missingStatements = SchemaUtils.addMissingColumnsStatements(t1)
+
+                if (testDb !in complexAlterTable) {
+                    val alterColumnWord = when (currentDialectTest) {
+                        is MysqlDialect -> "MODIFY COLUMN"
+                        is OracleDialect -> "MODIFY"
+                        else -> "ALTER COLUMN"
+                    }
+                    val expected = setOf(
+                        "ALTER TABLE ${t2.nameInDatabaseCase()} $alterColumnWord ${t1.col.nameInDatabaseCase()} ${t1.col.columnType.sqlType()} NULL",
+                        "ALTER TABLE ${t2.nameInDatabaseCase()} $alterColumnWord ${t1.strcol.nameInDatabaseCase()} ${t1.strcol.columnType.sqlType()} NULL",
+                    )
+                    assertEquals(expected, missingStatements.toSet())
+                } else {
+                    assertEquals(true, missingStatements.isNotEmpty())
+                }
+
+                missingStatements.forEach {
+                    exec(it)
+                }
+            } finally {
+                SchemaUtils.drop(t2)
+            }
+        }
+    }
+
+    @Test
     fun createTableWithMultipleIndexes() {
         withDb {
             try {
@@ -242,6 +323,20 @@ class CreateMissingTablesAndColumnsTests : DatabaseTestsBase() {
 
             assertTrue(T1.exists())
             assertTrue(T2.exists())
+        }
+    }
+
+    object ExplicitTable : IntIdTable() {
+        val playerId = integer("player_id").references(PlayerTable.id, fkName = "Explicit_FK_NAME")
+    }
+    object NonExplicitTable : IntIdTable() {
+        val playerId = integer("player_id").references(PlayerTable.id)
+    }
+
+    @Test fun explicitFkNameIsExplicit() {
+        withTables(ExplicitTable, NonExplicitTable) {
+            assertEquals("Explicit_FK_NAME", ExplicitTable.playerId.foreignKey!!.customFkName)
+            assertEquals(null, NonExplicitTable.playerId.foreignKey!!.customFkName)
         }
     }
 

@@ -1,15 +1,21 @@
 package org.jetbrains.exposed.sql
 
 import org.jetbrains.exposed.sql.transactions.TransactionManager
-import org.jetbrains.exposed.sql.vendors.*
-import java.util.*
+import org.jetbrains.exposed.sql.vendors.H2Dialect
+import org.jetbrains.exposed.sql.vendors.MysqlDialect
+import org.jetbrains.exposed.sql.vendors.currentDialect
 
 object SchemaUtils {
-    private class TableDepthGraph(val tables: List<Table>) {
-        val graph = fetchAllTables().associate { t ->
-            t to t.columns.mapNotNull { c ->
-                c.referee?.let { it.table to c.columnType.nullable }
-            }.toMap()
+    private class TableDepthGraph(val tables: Iterable<Table>) {
+        val graph = fetchAllTables().let { tables ->
+            if (tables.isEmpty()) emptyMap()
+            else {
+                tables.associateWith { t ->
+                    t.columns.mapNotNull { c ->
+                        c.referee?.let { it.table to c.columnType.nullable }
+                    }.toMap()
+                }
+            }
         }
 
         private fun fetchAllTables(): HashSet<Table> {
@@ -27,6 +33,8 @@ object SchemaUtils {
         }
 
         fun sorted(): List<Table> {
+            if (!tables.iterator().hasNext()) return emptyList()
+
             val visited = mutableSetOf<Table>()
             val result = arrayListOf<Table>()
 
@@ -47,6 +55,7 @@ object SchemaUtils {
         }
 
         fun hasCycle(): Boolean {
+            if (!tables.iterator().hasNext()) return false
             val visited = mutableSetOf<Table>()
             val recursion = mutableSetOf<Table>()
 
@@ -68,12 +77,11 @@ object SchemaUtils {
         }
     }
 
-    fun sortTablesByReferences(tables: Iterable<Table>) = TableDepthGraph(tables.toList()).sorted()
+    fun sortTablesByReferences(tables: Iterable<Table>) = TableDepthGraph(tables).sorted()
     fun checkCycle(vararg tables: Table) = TableDepthGraph(tables.toList()).hasCycle()
 
     fun createStatements(vararg tables: Table): List<String> {
-        if (tables.isEmpty())
-            return emptyList()
+        if (tables.isEmpty()) return emptyList()
 
         val toCreate = sortTablesByReferences(tables.toList()).filterNot { it.exists() }
         val alters = arrayListOf<String>()
@@ -110,8 +118,7 @@ object SchemaUtils {
     fun addMissingColumnsStatements(vararg tables: Table): List<String> {
         with(TransactionManager.current()) {
             val statements = ArrayList<String>()
-            if (tables.isEmpty())
-                return statements
+            if (tables.isEmpty()) return statements
 
             val existingTableColumns = logTimeSpent("Extracting table columns") {
                 currentDialect.tableColumns(*tables)
@@ -132,16 +139,22 @@ object SchemaUtils {
                     }
 
                     // sync existing columns
-                    val redoColumn = table.columns.filter { c ->
-                        thisTableExistingColumns.any {
-                            if (c.name.equals(it.name, true)) {
-                                val incorrectNullability = it.nullable != c.columnType.nullable
-                                val incorrectAutoInc = it.autoIncrement != c.columnType.isAutoInc
-                                incorrectNullability || incorrectAutoInc
-                            } else false
+                    val dataTypeProvider = db.dialect.dataTypeProvider
+                    val redoColumn = table.columns.mapNotNull { c ->
+                        val changedState = thisTableExistingColumns.find { c.name.equals(it.name, true) }?.let {
+                            val incorrectNullability = it.nullable != c.columnType.nullable
+                            val incorrectAutoInc = it.autoIncrement != c.columnType.isAutoInc
+                            val incorrectDefaults = it.defaultDbValue != c.dbDefaultValue?.let {
+                                dataTypeProvider.processForDefaultValue(it)
+                            }
+                            Triple(incorrectNullability, incorrectAutoInc, incorrectDefaults)
                         }
+
+                        changedState?.takeIf { it.first || it.second || it.third }?.let { c to changedState }
                     }
-                    redoColumn.flatMapTo(statements) { it.modifyStatement() }
+                    redoColumn.flatMapTo(statements) { (col, changedState) ->
+                        col.modifyStatements(changedState.first, changedState.second, changedState.third)
+                    }
                 }
             }
 
@@ -174,14 +187,15 @@ object SchemaUtils {
     }
 
     private fun Transaction.execStatements(inBatch: Boolean, statements: List<String>) {
-        if (inBatch)
+        if (inBatch) {
             execInBatch(statements)
-        else {
+        } else {
             for (statement in statements) {
                 exec(statement)
             }
         }
     }
+
     fun <T : Table> create(vararg tables: T, inBatch: Boolean = false) {
         with(TransactionManager.current()) {
             execStatements(inBatch, createStatements(*tables))

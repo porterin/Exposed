@@ -7,6 +7,7 @@ import java.util.*
 
 internal object PostgreSQLDataTypeProvider : DataTypeProvider() {
     override fun byteType(): String = "SMALLINT"
+    override fun floatType(): String = "REAL"
     override fun integerAutoincType(): String = "SERIAL"
     override fun longAutoincType(): String = "BIGSERIAL"
     override fun uuidType(): String = "uuid"
@@ -30,11 +31,19 @@ internal object PostgreSQLFunctionProvider : FunctionProvider() {
 
     override fun <T : String?> groupConcat(expr: GroupConcat<T>, queryBuilder: QueryBuilder) {
         val tr = TransactionManager.current()
-        return when {
-            expr.orderBy.isNotEmpty() -> tr.throwUnsupportedException("PostgreSQL doesn't support ORDER BY in STRING_AGG function.")
-            expr.distinct -> tr.throwUnsupportedException("PostgreSQL doesn't support DISTINCT in STRING_AGG function.")
-            expr.separator == null -> tr.throwUnsupportedException("PostgreSQL requires explicit separator in STRING_AGG function.")
-            else -> queryBuilder { append("STRING_AGG(", expr.expr, ", '", expr.separator, "')") }
+        return when (expr.separator) {
+            null -> tr.throwUnsupportedException("PostgreSQL requires explicit separator in STRING_AGG function.")
+            else -> queryBuilder {
+                append("STRING_AGG(")
+                if (expr.distinct) append(" DISTINCT ")
+                append(expr.expr, ", '", expr.separator, "'")
+                if (expr.orderBy.isNotEmpty()) {
+                    expr.orderBy.appendTo(prefix = " ORDER BY ") {
+                        append(it.first, " ", it.second.name)
+                    }
+                }
+                append(")")
+            }
         }
     }
 
@@ -150,7 +159,7 @@ internal object PostgreSQLFunctionProvider : FunctionProvider() {
             it.appendConditions(this)
         }
         where?.let {
-            + " AND "
+            +" AND "
             +it
         }
         toString()
@@ -177,7 +186,9 @@ internal object PostgreSQLFunctionProvider : FunctionProvider() {
             transaction.throwUnsupportedException("PostgreSQL replace table must supply at least one primary key.")
         }
         val conflictKey = uniqueCols.joinToString { transaction.identity(it) }
-        return def + "ON CONFLICT ($conflictKey) DO UPDATE SET " + columns.joinToString { "${transaction.identity(it)}=EXCLUDED.${transaction.identity(it)}" }
+        return def + "ON CONFLICT ($conflictKey) DO UPDATE SET " + columns.joinToString {
+            "${transaction.identity(it)}=EXCLUDED.${transaction.identity(it)}"
+        }
     }
 
     override fun delete(
@@ -200,19 +211,29 @@ internal object PostgreSQLFunctionProvider : FunctionProvider() {
 open class PostgreSQLDialect : VendorDialect(dialectName, PostgreSQLDataTypeProvider, PostgreSQLFunctionProvider) {
     override fun isAllowedAsColumnDefault(e: Expression<*>): Boolean = true
 
-    override fun modifyColumn(column: Column<*>): String = buildString {
-        val colName = TransactionManager.current().identity(column)
-        append("ALTER COLUMN $colName TYPE ${column.columnType.sqlType()},")
-        append("ALTER COLUMN $colName ")
-        if (column.columnType.nullable)
-            append("DROP ")
-        else
-            append("SET ")
-        append("NOT NULL")
-        column.dbDefaultValue?.let {
-            append(", ALTER COLUMN $colName SET DEFAULT ${PostgreSQLDataTypeProvider.processForDefaultValue(it)}")
+    override fun modifyColumn(column: Column<*>, nullabilityChanged: Boolean, autoIncrementChanged: Boolean, defaultChanged: Boolean): List<String> = listOf(buildString {
+        val tr = TransactionManager.current()
+        append("ALTER TABLE ${tr.identity(column.table)} ")
+        val colName = tr.identity(column)
+        append("ALTER COLUMN $colName TYPE ${column.columnType.sqlType()}")
+
+        if (nullabilityChanged) {
+            append(", ALTER COLUMN $colName ")
+            if (column.columnType.nullable) {
+                append("DROP ")
+            } else {
+                append("SET ")
+            }
+            append("NOT NULL")
         }
-    }
+        if (defaultChanged) {
+            column.dbDefaultValue?.let {
+                append(", ALTER COLUMN $colName SET DEFAULT ${PostgreSQLDataTypeProvider.processForDefaultValue(it)}")
+            } ?: run {
+                ",  ALTER COLUMN $colName DROP DEFAULT"
+            }
+        }
+    })
 
     override fun createDatabase(name: String): String = "CREATE DATABASE ${name.inProperCase()}"
 
