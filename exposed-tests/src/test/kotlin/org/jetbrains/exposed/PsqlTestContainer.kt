@@ -13,8 +13,7 @@ object PsqlTestContainer {
     System.setProperty("com.zaxxer.hikari.housekeeping.periodMs", "1000")
   }
 
-    private const val databaseDockerImageName = "postgres:9.5"
-//  private const val databaseDockerImageName = "mdillon/postgis:9.5-alpine"
+  private const val databaseDockerImageName = "postgres:9.5" // "mdillon/postgis:9.5-alpine"
 
   private const val databaseName = "test_db"
   private const val dbUsername = "test_user"
@@ -39,24 +38,16 @@ object PsqlTestContainer {
       minimumIdle = 0
       maximumPoolSize = 1
       connectionTimeout = 20_000
-//      leakDetectionThreshold = 5
+      leakDetectionThreshold = 5
     }
 
   private val meterRegistry = LoggingMeterRegistry(object : LoggingRegistryConfig {
-    override fun get(key: String): String? {
-      return null
-    }
-
-    override fun step(): Duration {
-      return Duration.ofSeconds(5)
-    }
+    override fun get(key: String) = null
+    override fun step() = Duration.ofSeconds(5)
   }, Clock.SYSTEM)
 
-  val dataSource = HikariDataSource(hikariConfig).apply {
-    metricRegistry = meterRegistry
-  }
+  private val dataSource = HikariDataSource(hikariConfig)
+    .apply { metricRegistry = meterRegistry }
 
-  val db: Database =
-    Database.connect(dataSource)
-
+  val db: Database = Database.connect(dataSource)
 }

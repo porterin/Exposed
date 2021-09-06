@@ -14,16 +14,13 @@ object SuspendedSpek : Spek({
   val db = PsqlTestContainer.db
 
   suspend fun queryJob(db: Database, i: Int) {
-    val query = """
-              SELECT pg_sleep(2), $i
-            """.trimIndent()
+    val query = "SELECT pg_sleep(2), $i".trimIndent()
     val context: CoroutineContext? = null
     execRawSql(Dispatchers.IO, query, context, db) { 0 }
   }
 
   describe("cancellation") {
-
-    beforeEach {
+    beforeEachTest {
       runBlocking {
         coroutineScope {
           val job1 = launch {
@@ -38,6 +35,7 @@ object SuspendedSpek : Spek({
           }
 
           delay(100)
+
           println("Cancelling job 1")
           job1.cancelAndJoin()
           println("Cancelled job 1")
