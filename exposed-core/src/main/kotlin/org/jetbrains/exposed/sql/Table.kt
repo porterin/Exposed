@@ -28,6 +28,23 @@ interface FieldSet {
     val source: ColumnSet
     /** Returns the field of this field set. */
     val fields: List<Expression<*>>
+
+    /**
+     * Returns all real fields, unrolling composite [CompositeColumn] if present
+     */
+    val realFields: List<Expression<*>>
+        get() {
+            val unrolled = ArrayList<Expression<*>>(fields.size)
+
+            fields.forEach {
+                if (it is CompositeColumn<*>) {
+                    unrolled.addAll(it.getRealColumns())
+                } else unrolled.add(it)
+            }
+
+            return unrolled
+        }
+
 }
 
 /**
@@ -78,10 +95,10 @@ abstract class ColumnSet : FieldSet {
     abstract fun crossJoin(otherTable: ColumnSet): Join
 
     /** Specifies a subset of [columns] of this [ColumnSet]. */
-    fun slice(vararg columns: Expression<*>): FieldSet = Slice(this, columns.distinct())
+    fun slice(column: Expression<*>, vararg columns: Expression<*>): FieldSet = Slice(this, listOf(column) + columns)
 
     /** Specifies a subset of [columns] of this [ColumnSet]. */
-    fun slice(columns: List<Expression<*>>): FieldSet = Slice(this, columns.distinct())
+    fun slice(columns: List<Expression<*>>): FieldSet = Slice(this, columns)
 }
 
 /** Creates an inner join relation with [otherTable] using [onColumn] and [otherColumn] as the join condition. */
@@ -160,12 +177,21 @@ class Join(
         otherColumn: Expression<*>? = null,
         additionalConstraint: (SqlExpressionBuilder.() -> Op<Boolean>)? = null
     ) : this(table) {
-        val new = if (onColumn != null && otherColumn != null) {
-            join(otherTable, joinType, onColumn, otherColumn, additionalConstraint)
-        } else {
-            join(otherTable, joinType, additionalConstraint)
+        val newJoin = when {
+            onColumn != null && otherColumn != null -> {
+                join(otherTable, joinType, onColumn, otherColumn, additionalConstraint)
+            }
+            onColumn != null || otherColumn != null -> {
+                error("Can't prepare join on $table and $otherTable when only column from a one side provided.")
+            }
+            additionalConstraint != null -> {
+                join(otherTable, joinType, emptyList(), additionalConstraint)
+            }
+            else -> {
+                implicitJoin(otherTable, joinType)
+            }
         }
-        joinParts.addAll(new.joinParts)
+        joinParts.addAll(newJoin.joinParts)
     }
 
     override fun describe(s: Transaction, queryBuilder: QueryBuilder): Unit = queryBuilder {
@@ -182,15 +208,7 @@ class Join(
             }
             if (p.joinType != JoinType.CROSS) {
                 append(" ON ")
-                p.conditions.appendTo(this, " AND ") { (pkColumn, fkColumn) -> append(pkColumn, " = ", fkColumn) }
-                if (p.additionalConstraint != null) {
-                    if (p.conditions.isNotEmpty()) {
-                        append(" AND ")
-                    }
-                    append(" (")
-                    append(SqlExpressionBuilder.(p.additionalConstraint)())
-                    append(")")
-                }
+                p.appendConditions(this)
             }
         }
     }
@@ -210,33 +228,32 @@ class Join(
         return join(otherTable, joinType, cond, additionalConstraint)
     }
 
-    override infix fun innerJoin(otherTable: ColumnSet): Join = join(otherTable, JoinType.INNER)
+    override infix fun innerJoin(otherTable: ColumnSet): Join = implicitJoin(otherTable, JoinType.INNER)
 
-    override infix fun leftJoin(otherTable: ColumnSet): Join = join(otherTable, JoinType.LEFT)
+    override infix fun leftJoin(otherTable: ColumnSet): Join = implicitJoin(otherTable, JoinType.LEFT)
 
-    override infix fun rightJoin(otherTable: ColumnSet): Join = join(otherTable, JoinType.RIGHT)
+    override infix fun rightJoin(otherTable: ColumnSet): Join = implicitJoin(otherTable, JoinType.RIGHT)
 
-    override infix fun fullJoin(otherTable: ColumnSet): Join = join(otherTable, JoinType.FULL)
+    override infix fun fullJoin(otherTable: ColumnSet): Join = implicitJoin(otherTable, JoinType.FULL)
 
-    override infix fun crossJoin(otherTable: ColumnSet): Join = join(otherTable, JoinType.CROSS)
+    override infix fun crossJoin(otherTable: ColumnSet): Join = implicitJoin(otherTable, JoinType.CROSS)
 
-    private fun join(
+    private fun implicitJoin(
         otherTable: ColumnSet,
-        joinType: JoinType = JoinType.INNER,
-        additionalConstraint: (SqlExpressionBuilder.() -> Op<Boolean>)? = null
+        joinType: JoinType
     ): Join {
         val fkKeys = findKeys(this, otherTable) ?: findKeys(otherTable, this) ?: emptyList()
         return when {
-            joinType != JoinType.CROSS && fkKeys.isEmpty() && additionalConstraint == null -> {
+            joinType != JoinType.CROSS && fkKeys.isEmpty() -> {
                 error("Cannot join with $otherTable as there is no matching primary key/foreign key pair and constraint missing")
             }
-            fkKeys.any { it.second.size > 1 } && additionalConstraint == null -> {
+            fkKeys.any { it.second.size > 1 } -> {
                 val references = fkKeys.joinToString(" & ") { "${it.first} -> ${it.second.joinToString()}" }
                 error("Cannot join with $otherTable as there is multiple primary key <-> foreign key references.\n$references")
             }
             else -> {
                 val cond = fkKeys.filter { it.second.size == 1 }.map { it.first to it.second.single() }
-                join(otherTable, joinType, cond, additionalConstraint)
+                join(otherTable, joinType, cond, null)
             }
         }
     }
@@ -268,6 +285,19 @@ class Join(
         init {
             require(joinType == JoinType.CROSS || conditions.isNotEmpty() || additionalConstraint != null) { "Missing join condition on $${this.joinPart}" }
         }
+
+        fun appendConditions(builder: QueryBuilder) = builder {
+            conditions.appendTo(this, " AND ") { (pkColumn, fkColumn) -> append(pkColumn, " = ", fkColumn) }
+            if (additionalConstraint != null) {
+                if (conditions.isNotEmpty()) {
+                    append(" AND ")
+                }
+                append(" (")
+                append(SqlExpressionBuilder.(additionalConstraint)())
+                append(")")
+            }
+        }
+
     }
 }
 
@@ -280,7 +310,9 @@ class Join(
  */
 open class Table(name: String = "") : ColumnSet(), DdlAware {
     /** Returns the table name. */
-    open val tableName: String = if (name.isNotEmpty()) name else this.javaClass.simpleName.removeSuffix("Table")
+    open val tableName: String = if (name.isNotEmpty()) name
+    else javaClass.name.removePrefix("${javaClass.`package`.name}.").substringAfter('$').removeSuffix("Table")
+
     internal val tableNameWithoutScheme: String get() = tableName.substringAfter(".")
 
     private val _columns = mutableListOf<Column<*>>()
@@ -329,6 +361,8 @@ open class Table(name: String = "") : ColumnSet(), DdlAware {
     /** Adds a column of the specified [type] and with the specified [name] to the table. */
     fun <T> registerColumn(name: String, type: IColumnType): Column<T> = Column<T>(this, name, type).also { _columns.addColumn(it) }
 
+    fun <R, T : CompositeColumn<R>> registerCompositeColumn(column: T) : T = column.apply { getRealColumns().forEach { _columns.addColumn(it) } }
+
     /**
      * Replaces the specified [oldColumn] with the specified [newColumn] in the table.
      * Mostly used internally by the library.
@@ -365,6 +399,7 @@ open class Table(name: String = "") : ColumnSet(), DdlAware {
         init {
             checkMultipleDeclaration()
             for (column in columns) column.markPrimaryKey()
+            columns.sortWith(compareBy { !it.columnType.isAutoInc })
         }
 
         /**
@@ -389,10 +424,6 @@ open class Table(name: String = "") : ColumnSet(), DdlAware {
             val table = this@Table
             if (table.columns.any { it.indexInPK != null }) {
                 removeOldPrimaryKey()
-                exposedLogger.error(
-                    "Confusion between multiple declarations of primary key on ${table.tableName}. " +
-                            "Use only override val primaryKey=PrimaryKey() declaration."
-                )
             }
         }
 
@@ -431,6 +462,9 @@ open class Table(name: String = "") : ColumnSet(), DdlAware {
     fun <T> Column<T>.primaryKey(indx: Int? = null): Column<T> = apply {
         require(indx == null || table.columns.none { it.indexInPK == indx }) { "Table $tableName already contains PK at $indx" }
         indexInPK = indx ?: table.columns.count { it.indexInPK != null } + 1
+        exposedLogger.error(
+                "primaryKey(indx) method is deprecated. Use override val primaryKey=PrimaryKey() declaration instead."
+        )
     }
 
     // EntityID columns
@@ -462,14 +496,33 @@ open class Table(name: String = "") : ColumnSet(), DdlAware {
 
     // Numeric columns
 
+    /** Creates a numeric column, with the specified [name], for storing 1-byte integers. */
+    fun byte(name: String): Column<Byte> = registerColumn(name, ByteColumnType())
+
+    /** Creates a numeric column, with the specified [name], for storing 1-byte unsigned integers. */
+    @ExperimentalUnsignedTypes
+    fun ubyte(name: String): Column<UByte> = registerColumn(name, UByteColumnType())
+
     /** Creates a numeric column, with the specified [name], for storing 2-byte integers. */
     fun short(name: String): Column<Short> = registerColumn(name, ShortColumnType())
+
+    /** Creates a numeric column, with the specified [name], for storing 2-byte unsigned integers. */
+    @ExperimentalUnsignedTypes
+    fun ushort(name: String): Column<UShort> = registerColumn(name, UShortColumnType())
 
     /** Creates a numeric column, with the specified [name], for storing 4-byte integers. */
     fun integer(name: String): Column<Int> = registerColumn(name, IntegerColumnType())
 
+    /** Creates a numeric column, with the specified [name], for storing 4-byte unsigned integers. */
+    @ExperimentalUnsignedTypes
+    fun uinteger(name: String): Column<UInt> = registerColumn(name, UIntegerColumnType())
+
     /** Creates a numeric column, with the specified [name], for storing 8-byte integers. */
     fun long(name: String): Column<Long> = registerColumn(name, LongColumnType())
+
+    /** Creates a numeric column, with the specified [name], for storing 8-byte unsigned integers. */
+    @ExperimentalUnsignedTypes
+    fun ulong(name: String): Column<ULong> = registerColumn(name, ULongColumnType())
 
     /** Creates a numeric column, with the specified [name], for storing 4-byte (single precision) floating-point numbers. */
     fun float(name: String): Column<Float> = registerColumn(name, FloatColumnType())
@@ -495,6 +548,12 @@ open class Table(name: String = "") : ColumnSet(), DdlAware {
     fun char(name: String): Column<Char> = registerColumn(name, CharacterColumnType())
 
     /**
+     * Creates a character column, with the specified [name], for storing strings with the specified [length] using the specified text [collate] type.
+     * If no collate type is specified then the database default is used.
+     */
+    fun char(name: String, length: Int, collate: String? = null): Column<String> = registerColumn(name, CharColumnType(length, collate))
+
+    /**
      * Creates a character column, with the specified [name], for storing strings with the specified maximum [length] using the specified text [collate] type.
      * If no collate type is specified then the database default is used.
      */
@@ -503,8 +562,12 @@ open class Table(name: String = "") : ColumnSet(), DdlAware {
     /**
      * Creates a character column, with the specified [name], for storing strings of arbitrary length using the specified [collate] type.
      * If no collate type is specified then the database default is used.
+     *
+     * Some database drivers do not load text content immediately (by performance and memory reasons)
+     * what means that you can obtain column value only within the open transaction.
+     * If you desire to make content available outside the transaction use [eagerLoading] param.
      */
-    fun text(name: String, collate: String? = null): Column<String> = registerColumn(name, TextColumnType(collate))
+    fun text(name: String, collate: String? = null, eagerLoading: Boolean = false): Column<String> = registerColumn(name, TextColumnType(collate, eagerLoading))
 
     // Binary columns
 
@@ -600,13 +663,22 @@ open class Table(name: String = "") : ColumnSet(), DdlAware {
         cloneWithAutoInc(idSeqName).also { replaceColumn(this, it) }
 
     /** Sets the default value for this column in the database side. */
-    fun <T : Any> Column<T>.default(defaultValue: T): Column<T> = apply {
+    fun <T> Column<T>.default(defaultValue: T): Column<T> = apply {
         dbDefaultValue = with(SqlExpressionBuilder) { asLiteral(defaultValue) }
         defaultValueFun = { defaultValue }
     }
 
     /** Sets the default value for this column in the database side. */
-    fun <T : Any> Column<T>.defaultExpression(defaultValue: Expression<T>): Column<T> = apply {
+    fun <T> CompositeColumn<T>.default(defaultValue: T): CompositeColumn<T> = apply {
+        with(this@Table) {
+            this@default.getRealColumnsWithValues(defaultValue).forEach {
+                (it.key as Column<Any>).default(it.value as Any)
+            }
+        }
+    }
+
+    /** Sets the default value for this column in the database side. */
+    fun <T> Column<T>.defaultExpression(defaultValue: Expression<T>): Column<T> = apply {
         dbDefaultValue = defaultValue
         defaultValueFun = null
     }
@@ -839,6 +911,12 @@ open class Table(name: String = "") : ColumnSet(), DdlAware {
         return replaceColumn(this, newColumn)
     }
 
+    @Suppress("UNCHECKED_CAST")
+    fun <T : Any, C: CompositeColumn<T>> C.nullable(): CompositeColumn<T?> = apply {
+        nullable = true
+        getRealColumns().filter { !it.columnType.nullable }.forEach { (it as Column<Any>).nullable() }
+    } as CompositeColumn<T?>
+
     // Indices
 
     /**
@@ -855,9 +933,10 @@ open class Table(name: String = "") : ColumnSet(), DdlAware {
      * @param customIndexName Name of the index.
      * @param columns Columns that compose the index.
      * @param isUnique Whether the index is unique or not.
+     * @param indexType A custom index type (e.g., "BTREE" or "HASH").
      */
-    fun index(customIndexName: String? = null, isUnique: Boolean = false, vararg columns: Column<*>) {
-        _indices.add(Index(columns.toList(), isUnique, customIndexName))
+    fun index(customIndexName: String? = null, isUnique: Boolean = false, vararg columns: Column<*>, indexType: String? = null) {
+        _indices.add(Index(columns.toList(), isUnique, customIndexName, indexType = indexType))
     }
 
     /**
@@ -941,7 +1020,7 @@ open class Table(name: String = "") : ColumnSet(), DdlAware {
         is AutoIncColumnType -> this
         is ColumnType -> {
             val autoIncSequence = idSeqName ?: "${tableName}_${name}_seq"
-            this@cloneWithAutoInc.clone<Column<T>>(mapOf(Column<T>::columnType to AutoIncColumnType(columnType, autoIncSequence)))
+            this@cloneWithAutoInc.clone<Column<T>>(mapOf(Column<T>::columnType to AutoIncColumnType(columnType as ColumnType, autoIncSequence)))
         }
         else -> error("Unsupported column type for auto-increment $columnType")
     }

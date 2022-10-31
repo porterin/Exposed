@@ -4,10 +4,7 @@ import org.jetbrains.exposed.dao.id.EntityID
 import org.jetbrains.exposed.dao.id.IdTable
 import org.jetbrains.exposed.sql.statements.*
 import org.jetbrains.exposed.sql.transactions.TransactionManager
-import org.jetbrains.exposed.sql.vendors.MysqlDialect
-import org.jetbrains.exposed.sql.vendors.SQLServerDialect
-import org.jetbrains.exposed.sql.vendors.currentDialect
-import org.jetbrains.exposed.sql.vendors.inProperCase
+import org.jetbrains.exposed.sql.vendors.*
 import java.util.*
 
 /**
@@ -53,10 +50,10 @@ fun FieldSet.selectAllBatched(
 /**
  * @sample org.jetbrains.exposed.sql.tests.shared.DMLTests.testDelete01
  */
-fun Table.deleteWhere(limit: Int? = null, offset: Int? = null, op: SqlExpressionBuilder.()->Op<Boolean>) =
+fun Table.deleteWhere(limit: Int? = null, offset: Long? = null, op: SqlExpressionBuilder.()->Op<Boolean>) =
     DeleteStatement.where(TransactionManager.current(), this@deleteWhere, SqlExpressionBuilder.op(), false, limit, offset)
 
-fun Table.deleteIgnoreWhere(limit: Int? = null, offset: Int? = null, op: SqlExpressionBuilder.()->Op<Boolean>) =
+fun Table.deleteIgnoreWhere(limit: Int? = null, offset: Long? = null, op: SqlExpressionBuilder.()->Op<Boolean>) =
     DeleteStatement.where(TransactionManager.current(), this@deleteIgnoreWhere, SqlExpressionBuilder.op(), true, limit, offset)
 
 /**
@@ -86,13 +83,18 @@ fun <Key:Comparable<Key>, T: IdTable<Key>> T.insertAndGetId(body: T.(InsertState
 /**
  * @sample org.jetbrains.exposed.sql.tests.shared.DMLTests.testBatchInsert01
  */
-fun <T:Table, E:Any> T.batchInsert(data: Iterable<E>, ignore: Boolean = false, body: BatchInsertStatement.(E)->Unit): List<ResultRow> {
+fun <T:Table, E> T.batchInsert(
+    data: Iterable<E>,
+    ignore: Boolean = false,
+    shouldReturnGeneratedValues: Boolean = true,
+    body: BatchInsertStatement.(E)->Unit
+): List<ResultRow> {
     if (data.count() == 0) return emptyList()
     fun newBatchStatement() : BatchInsertStatement {
         return if (currentDialect is SQLServerDialect && this.autoIncColumn != null) {
-            SQLServerBatchInsertStatement(this, ignore)
+            SQLServerBatchInsertStatement(this, ignore, shouldReturnGeneratedValues)
         } else {
-            BatchInsertStatement(this, ignore)
+            BatchInsertStatement(this, ignore, shouldReturnGeneratedValues)
         }
     }
     var statement = newBatchStatement()
@@ -157,11 +159,11 @@ fun <T:Table> T.replace(body: T.(UpdateBuilder<*>)->Unit): ReplaceStatement<Long
 /**
  * @sample org.jetbrains.exposed.sql.tests.shared.DMLTests.testInsertSelect01
  */
-fun <T:Table> T.insert(selectQuery: Query, columns: List<Column<*>> = this.columns.filterNot { it.columnType.isAutoInc }) =
+fun <T:Table> T.insert(selectQuery: AbstractQuery<*>, columns: List<Column<*>> = this.columns.filterNot { it.columnType.isAutoInc }) =
     InsertSelectStatement(columns, selectQuery).execute(TransactionManager.current())
 
 
-fun <T:Table> T.insertIgnore(selectQuery: Query, columns: List<Column<*>> = this.columns.filterNot { it.columnType.isAutoInc }) =
+fun <T:Table> T.insertIgnore(selectQuery: AbstractQuery<*>, columns: List<Column<*>> = this.columns.filterNot { it.columnType.isAutoInc }) =
     InsertSelectStatement(columns, selectQuery, true).execute(TransactionManager.current())
 
 
@@ -264,7 +266,7 @@ private fun FieldSet.selectBatched(
         }
 
         private fun toLong(autoIncVal: Any): Long = when (autoIncVal) {
-            is EntityID<*> -> autoIncVal.value as Long
+            is EntityID<*> ->toLong(autoIncVal.value)
             is Int -> autoIncVal.toLong()
             else -> autoIncVal as Long
         }
@@ -282,12 +284,18 @@ private fun checkMissingIndices(vararg tables: Table): List<Index> {
         }
     }
 
-    val tr = TransactionManager.current()
     val isMysql = currentDialect is MysqlDialect
+    val isSQLite = currentDialect is SQLiteDialect
     val fKeyConstraints = currentDialect.columnConstraints(*tables).keys
     val existingIndices = currentDialect.existingIndices(*tables)
     fun List<Index>.filterFKeys() = if (isMysql)
-        filterNot { (it.table.tableName.inProperCase() to it.columns.singleOrNull()?.let { c -> tr.identity(c) }) in fKeyConstraints }
+        filterNot { it.table to it.columns.singleOrNull() in fKeyConstraints }
+    else
+        this
+
+    // SQLite: indices whose names start with "sqlite_" are meant for internal use
+    fun List<Index>.filterInternalIndices() = if (isSQLite)
+        filter { !it.indexName.startsWith("sqlite_") }
     else
         this
 
@@ -296,8 +304,8 @@ private fun checkMissingIndices(vararg tables: Table): List<Index> {
     val nameDiffers = HashSet<Index>()
 
     for (table in tables) {
-        val existingTableIndices = existingIndices[table].orEmpty().filterFKeys()
-        val mappedIndices = table.indices.filterFKeys()
+        val existingTableIndices = existingIndices[table].orEmpty().filterFKeys().filterInternalIndices()
+        val mappedIndices = table.indices.filterFKeys().filterInternalIndices()
 
         existingTableIndices.forEach { index ->
             mappedIndices.firstOrNull { it.onlyNameDiffer(index) }?.let {

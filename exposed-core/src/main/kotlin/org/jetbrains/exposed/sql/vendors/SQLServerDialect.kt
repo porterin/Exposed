@@ -13,13 +13,18 @@ internal object SQLServerDataTypeProvider : DataTypeProvider() {
         error("The length of the Binary column is missing.")
     }
 
-    override val blobAsStream: Boolean = true
     override fun blobType(): String = "VARBINARY(MAX)"
     override fun uuidType(): String = "uniqueidentifier"
     override fun uuidToDB(value: UUID): Any = value.toString()
     override fun dateTimeType(): String = "DATETIME2"
     override fun booleanType(): String = "BIT"
     override fun booleanToStatementString(bool: Boolean): String = if (bool) "1" else "0"
+
+    /**
+     * varchar is used instead of "text" because it will be removed in future
+     * https://docs.microsoft.com/en-us/sql/t-sql/data-types/ntext-text-and-image-transact-sql?view=sql-server-ver15
+     */
+    override fun textType(): String = "VARCHAR(MAX)"
 }
 
 internal object SQLServerFunctionProvider : FunctionProvider() {
@@ -76,9 +81,52 @@ internal object SQLServerFunctionProvider : FunctionProvider() {
         append("DATEPART(MINUTE, ", expr, ")")
     }
 
-    override fun update(targets: ColumnSet, columnsAndValues: List<Pair<Column<*>, Any?>>, limit: Int?, where: Op<Boolean>?, transaction: Transaction): String {
-        val def = super.update(targets, columnsAndValues, null, where, transaction)
+    override fun update(target: Table, columnsAndValues: List<Pair<Column<*>, Any?>>, limit: Int?, where: Op<Boolean>?, transaction: Transaction): String {
+        val def = super.update(target, columnsAndValues, null, where, transaction)
         return if (limit != null) def.replaceFirst("UPDATE", "UPDATE TOP($limit)") else def
+    }
+
+    override fun update(
+        targets: Join,
+        columnsAndValues: List<Pair<Column<*>, Any?>>,
+        limit: Int?,
+        where: Op<Boolean>?,
+        transaction: Transaction
+    ): String = with(QueryBuilder(true)) {
+        val tableToUpdate = columnsAndValues.map { it.first.table }.distinct().singleOrNull()
+            ?: transaction.throwUnsupportedException("SQLServer supports a join updates with a single table columns to update.")
+
+        if (targets.joinParts.any { it.joinType != JoinType.INNER }) {
+            exposedLogger.warn("All tables in UPDATE statement will be joined with inner join")
+        }
+        if (limit != null)
+            +"UPDATE TOP($limit)"
+        else
+            +"UPDATE "
+        tableToUpdate.describe(transaction, this)
+        +" SET "
+        columnsAndValues.appendTo(this) { (col, value) ->
+            append("${transaction.fullIdentity(col)}=")
+            registerArgument(col, value)
+        }
+        +" FROM "
+        if (targets.table != tableToUpdate)
+            targets.table.describe(transaction, this)
+
+        targets.joinParts.appendTo(this, ",") {
+            if (it.joinPart != tableToUpdate)
+                it.joinPart.describe(transaction, this)
+        }
+        +" WHERE "
+        targets.joinParts.appendTo(this, " AND ") {
+            it.appendConditions(this)
+        }
+        where?.let {
+            + " AND "
+            +it
+        }
+        limit?.let { +" LIMIT $it" }
+        toString()
     }
 
     override fun delete(ignore: Boolean, table: Table, where: String?, limit: Int?, transaction: Transaction): String {
@@ -86,7 +134,7 @@ internal object SQLServerFunctionProvider : FunctionProvider() {
         return if (limit != null) def.replaceFirst("DELETE", "DELETE TOP($limit)") else def
     }
 
-    override fun queryLimit(size: Int, offset: Int, alreadyOrdered: Boolean): String {
+    override fun queryLimit(size: Int, offset: Long, alreadyOrdered: Boolean): String {
         return (if (alreadyOrdered) "" else " ORDER BY(SELECT NULL)") + " OFFSET $offset ROWS FETCH NEXT $size ROWS ONLY"
     }
 }
@@ -109,6 +157,25 @@ open class SQLServerDialect : VendorDialect(dialectName, SQLServerDataTypeProvid
     override fun createDatabase(name: String): String = "CREATE DATABASE ${name.inProperCase()}"
 
     override fun dropDatabase(name: String) = "DROP DATABASE ${name.inProperCase()}"
+
+    override fun setSchema(schema: Schema): String = "ALTER USER ${schema.authorization} WITH DEFAULT_SCHEMA = ${schema.identifier}"
+
+    override fun createSchema(schema: Schema): String = buildString {
+        append("CREATE SCHEMA ", schema.identifier)
+        appendIfNotNull(" AUTHORIZATION ", schema.authorization)
+    }
+
+    override fun dropSchema(schema: Schema, cascade: Boolean): String = buildString {
+        append("DROP SCHEMA ", schema.identifier)
+
+        if(cascade) {
+            append(" CASCADE")
+        }
+    }
+
+    override fun createIndexWithType(name: String, table: String, columns: String, type: String): String {
+        return "CREATE $type INDEX $name ON $table $columns"
+    }
 
     companion object {
         /** SQLServer dialect name */

@@ -1,8 +1,7 @@
 package org.jetbrains.exposed.sql
 
 import org.jetbrains.exposed.sql.transactions.TransactionManager
-import org.jetbrains.exposed.sql.vendors.currentDialect
-import org.jetbrains.exposed.sql.vendors.inProperCase
+import org.jetbrains.exposed.sql.vendors.*
 import java.util.*
 
 object SchemaUtils {
@@ -108,7 +107,7 @@ object SchemaUtils {
 
     fun createIndex(index: Index) = index.createStatement()
 
-    private fun addMissingColumnsStatements(vararg tables: Table): List<String> {
+    fun addMissingColumnsStatements(vararg tables: Table): List<String> {
         with(TransactionManager.current()) {
             val statements = ArrayList<String>()
             if (tables.isEmpty())
@@ -149,10 +148,10 @@ object SchemaUtils {
                     for (column in table.columns) {
                         val foreignKey = column.foreignKey
                         if (foreignKey != null) {
-                            val existingConstraint = existingColumnConstraint[table.tableName.inProperCase() to identity(column)]?.firstOrNull()
+                            val existingConstraint = existingColumnConstraint[table to column]?.firstOrNull()
                             if (existingConstraint == null) {
                                 statements.addAll(createFKey(column))
-                            } else if (existingConstraint.targetTable != foreignKey.targetTable
+                            } else if (existingConstraint.target.table != foreignKey.target.table
                                     || foreignKey.deleteRule != existingConstraint.deleteRule
                                     || foreignKey.updateRule != existingConstraint.updateRule) {
                                 statements.addAll(existingConstraint.dropStatement())
@@ -291,6 +290,78 @@ object SchemaUtils {
             val dropStatements = tablesForDeletion.flatMap { it.dropStatement() }
             execStatements(inBatch, dropStatements)
             currentDialect.resetCaches()
+        }
+    }
+
+    /**
+     * Sets the current default schema to [schema]. Supported by H2, MariaDB, Mysql, Oracle, PostgreSQL and SQL Server.
+     * SQLite doesn't support schemas.
+     *
+     * @sample org.jetbrains.exposed.sql.tests.shared.SchemaTests
+     */
+    fun setSchema(schema: Schema, inBatch: Boolean = false) {
+        with(TransactionManager.current()) {
+            val createStatements = schema.setSchemaStatement()
+
+            execStatements(inBatch, createStatements)
+
+            when (currentDialect) {
+                /** Sets manually the database name in connection.catalog for Mysql.
+                 * Mysql doesn't change catalog after executing "Use db" statement*/
+                is MysqlDialect -> {
+                    connection.catalog = schema.identifier
+                }
+                is H2Dialect -> {
+                    connection.schema = schema.identifier
+                }
+            }
+            currentDialect.resetCaches()
+            connection.metadata { resetCurrentScheme() }
+        }
+    }
+
+    /**
+     * Creates schemas
+     *
+     * @sample org.jetbrains.exposed.sql.tests.shared.SchemaTests
+     *
+     * @param schemas the names of the schemas
+     * @param inBatch flag to perform schema creation in a single batch
+     */
+    fun createSchema(vararg schemas: Schema, inBatch: Boolean = false) {
+        if (schemas.isEmpty()) return
+        with(TransactionManager.current()) {
+            val toCreate = schemas.distinct().filterNot { it.exists() }
+            val createStatements = toCreate.flatMap { it.createStatement() }
+            execStatements(inBatch, createStatements)
+            commit()
+            currentDialect.resetSchemaCaches()
+        }
+    }
+
+    /**
+     * Drops schemas
+     *
+     * **Note** that when you are using Mysql or MariaDB, this will fail if you try to drop a schema that
+     * contains a table that is referenced by a table in another schema.
+     *
+     * @sample org.jetbrains.exposed.sql.tests.shared.SchemaTests
+     *
+     * @param schemas the names of the schema
+     * @param cascade flag to drop schema and all of its objects and all objects that depend on those objects.
+     * You don't have to specify this option when you are using Mysql or MariaDB
+     * because whether you specify it or not, all objects in the schema will be dropped.
+     * @param inBatch flag to perform schema creation in a single batch
+     */
+    fun dropSchema(vararg schemas: Schema, cascade: Boolean = false, inBatch: Boolean = false) {
+        if (schemas.isEmpty()) return
+        with(TransactionManager.current()) {
+            val schemasForDeletion = if (currentDialect.supportsIfNotExists) schemas.distinct() else schemas.distinct().filter { it.exists() }
+            val dropStatements = schemasForDeletion.flatMap { it.dropStatement(cascade) }
+
+            execStatements(inBatch, dropStatements)
+
+            currentDialect.resetSchemaCaches()
         }
     }
 }

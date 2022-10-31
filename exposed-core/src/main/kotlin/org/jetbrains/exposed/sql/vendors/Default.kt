@@ -7,8 +7,6 @@ import java.nio.ByteBuffer
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 
-internal typealias TableAndColumnName = Pair<String, String>
-
 /**
  * Provides definitions for all the supported SQL data types.
  * By default, definitions from the SQL standard are provided but if a vendor doesn't support a specific type, or it is
@@ -17,14 +15,32 @@ internal typealias TableAndColumnName = Pair<String, String>
 abstract class DataTypeProvider {
     // Numeric types
 
+    /** Numeric type for storing 1-byte integers. */
+    open fun byteType(): String = "TINYINT"
+
+    /** Numeric type for storing 1-byte unsigned integers. */
+    open fun ubyteType(): String = "TINYINT"
+
+    /** Numeric type for storing 2-byte integers. */
+    open fun shortType(): String = "SMALLINT"
+
+    /** Numeric type for storing 2-byte unsigned integers. */
+    open fun ushortType(): String = "SMALLINT"
+
     /** Numeric type for storing 4-byte integers. */
     open fun integerType(): String = "INT"
+
+    /** Numeric type for storing 4-byte unsigned integers. */
+    open fun uintegerType(): String = "INT"
 
     /** Numeric type for storing 4-byte integers, marked as auto-increment. */
     open fun integerAutoincType(): String = "INT AUTO_INCREMENT"
 
     /** Numeric type for storing 8-byte integers. */
     open fun longType(): String = "BIGINT"
+
+    /** Numeric type for storing 8-byte unsigned integers. */
+    open fun ulongType(): String = "BIGINT"
 
     /** Numeric type for storing 8-byte integers, and marked as auto-increment. */
     open fun longAutoincType(): String = "BIGINT AUTO_INCREMENT"
@@ -46,9 +62,7 @@ abstract class DataTypeProvider {
     abstract fun binaryType(): String
 
     /** Binary type for storing binary strings of a specific [length]. */
-    open fun binaryType(length: Int): String = "VARBINARY($length)"
-
-    open val blobAsStream: Boolean = false
+    open fun binaryType(length: Int): String = if (length == Int.MAX_VALUE) "VARBINARY(MAX)" else "VARBINARY($length)"
 
     /** Binary type for storing BLOBs. */
     open fun blobType(): String = "BLOB"
@@ -139,7 +153,7 @@ abstract class FunctionProvider {
      * @param queryBuilder Query builder to append the SQL function to.
      * @param expr String expressions to concatenate.
      */
-    open fun <T : String?> concat(separator: String, queryBuilder: QueryBuilder, vararg expr: Expression<T>): Unit = queryBuilder {
+    open fun concat(separator: String, queryBuilder: QueryBuilder, vararg expr: Expression<*>): Unit = queryBuilder {
         if (separator == "") {
             append("CONCAT(")
         } else {
@@ -191,7 +205,7 @@ abstract class FunctionProvider {
      * @param pattern Pattern the expression is checked against.
      * @param mode Match mode used to check the expression.
      */
-    open fun <T : String?> ExpressionWithColumnType<T>.match(pattern: String, mode: MatchMode? = null): Op<Boolean> = with(SqlExpressionBuilder) {
+    open fun <T : String?> Expression<T>.match(pattern: String, mode: MatchMode? = null): Op<Boolean> = with(SqlExpressionBuilder) {
         this@match.like(pattern)
     }
 
@@ -350,23 +364,23 @@ abstract class FunctionProvider {
     /**
      * Returns the SQL command that updates one or more rows of a table.
      *
-     * @param targets Column set to update values from.
+     * @param target Table to update values from.
      * @param columnsAndValues Pairs of column to update and values to update with.
      * @param limit Maximum number of rows to update.
      * @param where Condition that decides the rows to update.
      * @param transaction Transaction where the operation is executed.
      */
     open fun update(
-        targets: ColumnSet,
+        target: Table,
         columnsAndValues: List<Pair<Column<*>, Any?>>,
         limit: Int?,
         where: Op<Boolean>?,
         transaction: Transaction
     ): String = with(QueryBuilder(true)) {
         +"UPDATE "
-        targets.describe(transaction, this)
-        +" SET "
-        columnsAndValues.appendTo(this) { (col, value) ->
+        target.describe(transaction, this)
+
+        columnsAndValues.appendTo(this, prefix = " SET ") { (col, value) ->
             append("${transaction.identity(col)}=")
             registerArgument(col, value)
         }
@@ -378,6 +392,23 @@ abstract class FunctionProvider {
         limit?.let { +" LIMIT $it" }
         toString()
     }
+
+    /**
+     * Returns the SQL command that updates one or more rows of a join.
+     *
+     * @param targets Join to update values from.
+     * @param columnsAndValues Pairs of column to update and values to update with.
+     * @param limit Maximum number of rows to update.
+     * @param where Condition that decides the rows to update.
+     * @param transaction Transaction where the operation is executed.
+     */
+    open fun update(
+        targets: Join,
+        columnsAndValues: List<Pair<Column<*>, Any?>>,
+        limit: Int?,
+        where: Op<Boolean>?,
+        transaction: Transaction
+    ) : String = transaction.throwUnsupportedException("UPDATE with a join clause is unsupported")
 
     /**
      * Returns the SQL command that insert a new row into a table, but if another row with the same primary/unique key already exists then it updates the values of that row instead.
@@ -435,12 +466,10 @@ abstract class FunctionProvider {
      * @param offset The number of rows to skip.
      * @param alreadyOrdered Whether the query is already ordered or not.
      */
-    open fun queryLimit(size: Int, offset: Int, alreadyOrdered: Boolean): String = buildString {
-        if (size > 0) {
-            append("LIMIT $size")
-            if (offset > 0) {
-                append(" OFFSET $offset")
-            }
+    open fun queryLimit(size: Int, offset: Long, alreadyOrdered: Boolean): String = buildString {
+        append("LIMIT $size")
+        if (offset > 0) {
+            append(" OFFSET $offset")
         }
     }
 }
@@ -488,6 +517,10 @@ interface DatabaseDialect {
     /** Returns`true` if the dialect supports returning generated keys obtained from a sequence. */
     val supportsSequenceAsGeneratedKeys: Boolean get() = supportsCreateSequence
     val supportsOnlyIdentifiersInGeneratedKeys: Boolean get() = false
+    /** Returns`true` if the dialect supports schema creation. */
+    val supportsCreateSchema: Boolean get() = true
+    /** Returns `true` if the dialect supports subqueries within a UNION/EXCEPT/INTERSECT statement */
+    val supportsSubqueryUnions: Boolean get() = false
 
     /** Returns the name of the current database. */
     fun getDatabase(): String
@@ -498,13 +531,16 @@ interface DatabaseDialect {
     /** Checks if the specified table exists in the database. */
     fun tableExists(table: Table): Boolean
 
+    /** Checks if the specified schema exists. */
+    fun schemaExists(schema: Schema): Boolean
+
     fun checkTableMapping(table: Table): Boolean = true
 
     /** Returns a map with the column metadata of all the defined columns in each of the specified [tables]. */
     fun tableColumns(vararg tables: Table): Map<Table, List<ColumnMetadata>> = emptyMap()
 
     /** Returns a map with the foreign key constraints of all the defined columns in each of the specified [tables]. */
-    fun columnConstraints(vararg tables: Table): Map<TableAndColumnName, List<ForeignKeyConstraint>> = emptyMap()
+    fun columnConstraints(vararg tables: Table): Map<Pair<Table, Column<*>>, List<ForeignKeyConstraint>> = emptyMap()
 
     /** Returns a map with all the defined indices in each of the specified [tables]. */
     fun existingIndices(vararg tables: Table): Map<Table, List<Index>> = emptyMap()
@@ -521,6 +557,9 @@ interface DatabaseDialect {
     /** Clears any cached values. */
     fun resetCaches()
 
+    /** Clears any cached values including schema names. */
+    fun resetSchemaCaches()
+
     // Specific SQL statements
 
     /** Returns the SQL command that creates the specified [index]. */
@@ -535,6 +574,22 @@ interface DatabaseDialect {
     fun createDatabase(name: String) = "CREATE DATABASE IF NOT EXISTS ${name.inProperCase()}"
 
     fun dropDatabase(name: String) = "DROP DATABASE IF EXISTS ${name.inProperCase()}"
+
+    fun setSchema(schema: Schema): String = "SET SCHEMA ${schema.identifier}"
+
+    fun createSchema(schema: Schema): String = buildString {
+        append("CREATE SCHEMA IF NOT EXISTS ")
+        append(schema.identifier)
+        appendIfNotNull(" AUTHORIZATION ", schema.authorization)
+    }
+
+    fun dropSchema(schema: Schema, cascade: Boolean): String = buildString {
+        append("DROP SCHEMA IF EXISTS ", schema.identifier)
+
+        if(cascade) {
+            append(" CASCADE")
+        }
+    }
 }
 
 /**
@@ -547,41 +602,74 @@ abstract class VendorDialect(
 ) : DatabaseDialect {
 
     /* Cached values */
-    private var _allTableNames: List<String>? = null
-    /** Returns a list with the names of all the defined tables. */
+    private var _allTableNames: Map<String, List<String>>? = null
+    private var _allSchemaNames: List<String>? = null
+    /** Returns a list with the names of all the defined tables within default scheme. */
     val allTablesNames: List<String>
         get() {
-            if (_allTableNames == null) {
-                _allTableNames = allTablesNames()
-            }
-            return _allTableNames!!
+            val connection = TransactionManager.current().connection
+            return getAllTableNamesCache().getValue(connection.metadata { currentScheme })
         }
+
+    private fun getAllTableNamesCache(): Map<String, List<String>> {
+        val connection = TransactionManager.current().connection
+        if (_allTableNames == null) {
+            _allTableNames = connection.metadata { tableNames }
+        }
+        return _allTableNames!!
+    }
+
+    private fun getAllSchemaNamesCache(): List<String> {
+        val connection = TransactionManager.current().connection
+        if (_allSchemaNames == null) {
+            _allSchemaNames = connection.metadata { schemaNames }
+        }
+        return _allSchemaNames!!
+    }
 
     override val supportsMultipleGeneratedKeys: Boolean = true
 
     override fun getDatabase(): String = catalog(TransactionManager.current())
 
     /**
-     * Returns a list with the names of all the defined tables.
+     * Returns a list with the names of all the defined tables with schema prefixes if database supports it.
      * This method always re-read data from DB.
      * Using `allTablesNames` field is the preferred way.
      */
-    override fun allTablesNames(): List<String> = TransactionManager.current().connection.metadata { tableNames }
+    override fun allTablesNames(): List<String> = TransactionManager.current().connection.metadata {
+        tableNames.getValue(currentScheme)
+    }
 
-    override fun tableExists(table: Table): Boolean = allTablesNames.any { it == table.nameInDatabaseCase() }
+    override fun tableExists(table: Table): Boolean {
+        val tableScheme = table.tableName.substringBefore('.', "").takeIf { it.isNotEmpty() }
+        val scheme = tableScheme?.inProperCase() ?: TransactionManager.current().connection.metadata { currentScheme }
+        val allTables = getAllTableNamesCache().getValue(scheme)
+        return allTables.any {
+            when {
+                tableScheme != null -> it == table.nameInDatabaseCase()
+                scheme.isEmpty() -> it == table.nameInDatabaseCase()
+                else -> it == "$scheme.${table.tableNameWithoutScheme}".inProperCase()
+            }
+        }
+    }
+
+    override fun schemaExists(schema: Schema): Boolean {
+        val allSchemas = getAllSchemaNamesCache()
+        return allSchemas.any { it == schema.identifier.inProperCase() }
+    }
 
     override fun tableColumns(vararg tables: Table): Map<Table, List<ColumnMetadata>> =
         TransactionManager.current().connection.metadata { columns(*tables) }
 
-    override fun columnConstraints(vararg tables: Table): Map<Pair<String, String>, List<ForeignKeyConstraint>> {
-        val constraints = HashMap<Pair<String, String>, MutableList<ForeignKeyConstraint>>()
+    override fun columnConstraints(vararg tables: Table): Map<Pair<Table, Column<*>>, List<ForeignKeyConstraint>> {
+        val constraints = HashMap<Pair<Table, Column<*>>, MutableList<ForeignKeyConstraint>>()
 
         val tablesToLoad = tables.filter { !columnConstraintsCache.containsKey(it.nameInDatabaseCase()) }
 
         fillConstraintCacheForTables(tablesToLoad)
         tables.forEach { table ->
             columnConstraintsCache[table.nameInDatabaseCase()].orEmpty().forEach {
-                constraints.getOrPut(it.fromTable to it.fromColumn) { arrayListOf() }.add(it)
+                constraints.getOrPut(it.from.table to it.from) { arrayListOf() }.add(it)
             }
 
         }
@@ -608,17 +696,31 @@ abstract class VendorDialect(
         TransactionManager.current().db.metadata { cleanCache() }
     }
 
+    override fun resetSchemaCaches() {
+        _allSchemaNames = null
+        resetCaches()
+    }
+
     override fun createIndex(index: Index): String {
         val t = TransactionManager.current()
         val quotedTableName = t.identity(index.table)
         val quotedIndexName = t.db.identifierManager.cutIfNecessaryAndQuote(index.indexName)
         val columnsList = index.columns.joinToString(prefix = "(", postfix = ")") { t.identity(it) }
-        return if (index.unique) {
-            "ALTER TABLE $quotedTableName ADD CONSTRAINT $quotedIndexName UNIQUE $columnsList"
-        } else {
-            "CREATE INDEX $quotedIndexName ON $quotedTableName $columnsList"
+        return when {
+            index.unique -> {
+                "ALTER TABLE $quotedTableName ADD CONSTRAINT $quotedIndexName UNIQUE $columnsList"
+            }
+            index.indexType != null -> {
+                createIndexWithType(name = quotedIndexName, table = quotedTableName, columns = columnsList, type = index.indexType)
+            }
+            else -> {
+                "CREATE INDEX $quotedIndexName ON $quotedTableName $columnsList"
+            }
         }
+    }
 
+    protected open fun createIndexWithType(name: String, table: String, columns: String, type: String): String {
+        return "CREATE INDEX $name ON $table $columns USING $type"
     }
 
     override fun dropIndex(tableName: String, indexName: String): String {
@@ -629,8 +731,18 @@ abstract class VendorDialect(
     override fun modifyColumn(column: Column<*>): String = "MODIFY COLUMN ${column.descriptionDdl()}"
 }
 
+private val explicitDialect = ThreadLocal<DatabaseDialect?>()
+
+internal fun <T> withDialect(dialect: DatabaseDialect, body: () -> T) : T {
+    return try {
+        explicitDialect.set(dialect)
+        body()
+    } finally {
+        explicitDialect.set(null)
+    }
+}
 /** Returns the dialect used in the current transaction, may trow an exception if there is no current transaction. */
-val currentDialect: DatabaseDialect get() = TransactionManager.current().db.dialect
+val currentDialect: DatabaseDialect get() = explicitDialect.get() ?: TransactionManager.current().db.dialect
 
 internal val currentDialectIfAvailable: DatabaseDialect?
     get() = if (TransactionManager.isInitialized() && TransactionManager.currentOrNull() != null) {

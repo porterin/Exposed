@@ -16,9 +16,11 @@ class ImmutableEntityTest : DatabaseTestsBase() {
 
     object Schema {
         object Organization : IdTable<Long>() {
-            override val id = long("id").autoIncrement().primaryKey().entityId()
+            override val id = long("id").autoIncrement().entityId()
             val name = varchar("name", 256)
             val etag = long("etag").default(0)
+
+            override val primaryKey = PrimaryKey(id)
         }
     }
 
@@ -52,7 +54,7 @@ class ImmutableEntityTest : DatabaseTestsBase() {
 
                 EOrganization.forceUpdateEntity(org, Schema.Organization.etag, 1)
 
-                assertEquals(1, EOrganization.all().single().etag)
+                assertEquals(1L, EOrganization.all().single().etag)
             }
         }
     }
@@ -91,7 +93,7 @@ class ImmutableEntityTest : DatabaseTestsBase() {
                 val org = ECachedOrganization.all().single()
 
                 assertEquals("JetBrains Gmbh", org.name)
-                assertEquals(1, org.etag)
+                assertEquals(1L, org.etag)
             }
         }
     }

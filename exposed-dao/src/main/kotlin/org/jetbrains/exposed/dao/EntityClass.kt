@@ -47,7 +47,7 @@ abstract class EntityClass<ID : Comparable<ID>, out T: Entity<ID>>(val table: Id
      */
     fun reload(entity: Entity<ID>, flush: Boolean = false): T? {
         if (flush) {
-            if (entity.id._value == null)
+            if (entity.isNewEntity())
                 TransactionManager.current().entityCache.flushInserts(table)
             else
                 entity.flush()
@@ -64,7 +64,7 @@ abstract class EntityClass<ID : Comparable<ID>, out T: Entity<ID>>(val table: Id
             if (currentEntityInCache == null) {
                 get(o.id) // Check that entity is still exists in database
                 warmCache().store(o)
-            } else if (currentEntityInCache != o) {
+            } else if (currentEntityInCache !== o) {
                 exposedLogger.error("Entity instance in cache differs from the provided: ${o::class.simpleName} with ID ${o.id.value}. Changes on entity could be missed.")
             }
         }
@@ -192,11 +192,11 @@ abstract class EntityClass<ID : Comparable<ID>, out T: Entity<ID>>(val table: Id
      *
      * @return The amount of entities that conform to the [op] statement.
      */
-    fun count(op: Op<Boolean>? = null): Int = with(TransactionManager.current()) {
-        val query = table.slice(table.id.count())
-        (if (op == null) query.selectAll() else query.select{op}).notForUpdate().first()[
-                table.id.count()
-        ]
+    fun count(op: Op<Boolean>? = null): Long  {
+        val countExpression = table.id.count()
+        val query = table.slice(countExpression).selectAll().notForUpdate()
+        op?.let { query.adjustWhere { op } }
+        return query.first()[countExpression]
     }
 
     protected open fun createInstance(entityId: EntityID<ID>, row: ResultRow?) : T = ctor.call(entityId) as T
@@ -281,13 +281,13 @@ abstract class EntityClass<ID : Comparable<ID>, out T: Entity<ID>>(val table: Id
             = registerRefRule(column) { OptionalBackReference<TargetID, Target, ID, Entity<ID>, REF>(column, this) }
 
     infix fun <TargetID: Comparable<TargetID>, Target: Entity<TargetID>, REF: Comparable<REF>> EntityClass<TargetID, Target>.referrersOn(column: Column<REF>)
-            = registerRefRule(column) { Referrers<ID, Entity<ID>, TargetID, Target, REF>(column, this, false) }
+            = registerRefRule(column) { Referrers<ID, Entity<ID>, TargetID, Target, REF>(column, this, true) }
 
     fun <TargetID: Comparable<TargetID>, Target: Entity<TargetID>, REF: Comparable<REF>> EntityClass<TargetID, Target>.referrersOn(column: Column<REF>, cache: Boolean)
             = registerRefRule(column) { Referrers<ID, Entity<ID>, TargetID, Target, REF>(column, this, cache) }
 
     infix fun <TargetID: Comparable<TargetID>, Target: Entity<TargetID>, REF: Comparable<REF>> EntityClass<TargetID, Target>.optionalReferrersOn(column : Column<REF?>)
-            = registerRefRule(column) { OptionalReferrers<ID, Entity<ID>, TargetID, Target, REF>(column, this, false) }
+            = registerRefRule(column) { OptionalReferrers<ID, Entity<ID>, TargetID, Target, REF>(column, this, true) }
 
     fun <TargetID: Comparable<TargetID>, Target: Entity<TargetID>, REF: Comparable<REF>> EntityClass<TargetID, Target>.optionalReferrersOn(column: Column<REF?>, cache: Boolean = false) =
             registerRefRule(column) { OptionalReferrers<ID, Entity<ID>, TargetID, Target, REF>(column, this, cache) }

@@ -2,24 +2,36 @@ package org.jetbrains.exposed.sql.tests.shared
 
 import kotlinx.coroutines.*
 import kotlinx.coroutines.debug.junit4.CoroutinesTimeout
+import org.jetbrains.exposed.dao.IntEntity
+import org.jetbrains.exposed.dao.IntEntityClass
+import org.jetbrains.exposed.dao.id.EntityID
+import org.jetbrains.exposed.dao.id.IntIdTable
+import org.jetbrains.exposed.exceptions.ExposedSQLException
 import org.jetbrains.exposed.sql.*
+import org.jetbrains.exposed.sql.statements.api.ExposedConnection
 import org.jetbrains.exposed.sql.tests.DatabaseTestsBase
 import org.jetbrains.exposed.sql.tests.TestDB
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.jetbrains.exposed.sql.transactions.experimental.suspendedTransaction
 import org.jetbrains.exposed.sql.transactions.experimental.suspendedTransactionAsync
+import org.jetbrains.exposed.sql.tests.RepeatableTest
+import org.jetbrains.exposed.sql.transactions.inTopLevelTransaction
 import org.jetbrains.exposed.sql.transactions.transaction
-import org.jetbrains.exposed.test.utils.RepeatableTest
+import org.jetbrains.exposed.sql.transactions.transactionManager
 import org.junit.Rule
 import org.junit.Test
+import java.lang.Exception
+import java.lang.IllegalStateException
 import java.sql.Connection
+import java.util.concurrent.Executors
+import kotlin.test.assertNotNull
+
+private val singleThreadDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
 
 @ExperimentalCoroutinesApi
 class CoroutineTests : DatabaseTestsBase() {
 
-    object Testing : Table("COROUTINE_TESTING") {
-        val id = integer("id").primaryKey().autoIncrement() // Column<Int>
-    }
+    object Testing : IntIdTable("COROUTINE_TESTING")
 
     @Rule
     @JvmField
@@ -28,21 +40,21 @@ class CoroutineTests : DatabaseTestsBase() {
     @Test @RepeatableTest(10)
     fun suspendedTx() {
         withTables(Testing) {
-            val mainJob = GlobalScope.async {
+            val mainJob = GlobalScope.async(singleThreadDispatcher) {
 
-                val job = launch(Dispatchers.IO) {
+                val job = launch(singleThreadDispatcher) {
                     newSuspendedTransaction(db = db) {
                         Testing.insert {}
 
                         suspendedTransaction {
-                            assertEquals(1, Testing.select { Testing.id.eq(1) }.singleOrNull()?.getOrNull(Testing.id))
+                            assertEquals(1, Testing.select { Testing.id.eq(1) }.singleOrNull()?.getOrNull(Testing.id)?.value)
                         }
                     }
                 }
 
                 job.join()
-                val result = newSuspendedTransaction(Dispatchers.Default, db = db) {
-                    Testing.select { Testing.id.eq(1) }.single()[Testing.id]
+                val result = newSuspendedTransaction(singleThreadDispatcher, db = db) {
+                    Testing.select { Testing.id.eq(1) }.single()[Testing.id].value
                 }
 
                 kotlin.test.assertEquals(1, result)
@@ -50,6 +62,8 @@ class CoroutineTests : DatabaseTestsBase() {
 
             while (!mainJob.isCompleted) Thread.sleep(100)
             mainJob.getCompletionExceptionOrNull()?.let { throw it }
+            assertEquals(1, Testing.select { Testing.id.eq(1) }.single()[Testing.id].value)
+
         }
     }
 
@@ -61,13 +75,13 @@ class CoroutineTests : DatabaseTestsBase() {
                     Testing.insert{}
 
                     suspendedTransaction {
-                        assertEquals(1, Testing.select { Testing.id.eq(1) }.singleOrNull()?.getOrNull(Testing.id))
+                        assertEquals(1, Testing.select { Testing.id.eq(1) }.singleOrNull()?.getOrNull(Testing.id)?.value)
                     }
                 }
 
                 launchResult.await()
                 val result = suspendedTransactionAsync(Dispatchers.Default, db = db) {
-                    Testing.select { Testing.id.eq(1) }.single()[Testing.id]
+                    Testing.select { Testing.id.eq(1) }.single()[Testing.id].value
                 }.await()
 
                 val result2 = suspendedTransactionAsync(Dispatchers.Default, db = db) {
@@ -81,12 +95,13 @@ class CoroutineTests : DatabaseTestsBase() {
             while (!job.isCompleted) Thread.sleep(100)
 
             job.getCompletionExceptionOrNull()?.let { throw it }
+            assertEquals(1, Testing.selectAll().count())
         }
     }
 
     @Test @RepeatableTest(10)
     fun nestedSuspendTxTest() {
-        suspend fun insertTesting(db : Database) =  newSuspendedTransaction(db = db) {
+        suspend fun insertTesting(db : Database) = newSuspendedTransaction(db = db) {
             Testing.insert {}
         }
         withTables(listOf(TestDB.SQLITE), Testing) {
@@ -99,13 +114,13 @@ class CoroutineTests : DatabaseTestsBase() {
 
                         insertTesting(db)
 
-                        assertEquals(1, Testing.select { Testing.id.eq(1) }.singleOrNull()?.getOrNull(Testing.id))
+                        assertEquals(1, Testing.select { Testing.id.eq(1) }.singleOrNull()?.getOrNull(Testing.id)?.value)
                     }
                 }
 
                 job.join()
                 val result = newSuspendedTransaction(Dispatchers.Default, db = db) {
-                    Testing.select { Testing.id.eq(1) }.single()[Testing.id]
+                    Testing.select { Testing.id.eq(1) }.single()[Testing.id].value
                 }
 
                 kotlin.test.assertEquals(1, result)
@@ -113,6 +128,7 @@ class CoroutineTests : DatabaseTestsBase() {
 
             while (!mainJob.isCompleted) Thread.sleep(100)
             mainJob.getCompletionExceptionOrNull()?.let { throw it }
+            assertEquals(1, Testing.select { Testing.id.eq(1) }.single()[Testing.id].value)
         }
     }
 
@@ -144,6 +160,7 @@ class CoroutineTests : DatabaseTestsBase() {
 
             while (!mainJob.isCompleted) Thread.sleep(100)
             mainJob.getCompletionExceptionOrNull()?.let { throw it }
+            assertEquals(10, Testing.selectAll().count())
         }
     }
 
@@ -165,9 +182,69 @@ class CoroutineTests : DatabaseTestsBase() {
             while (!mainJob.isCompleted) Thread.sleep(100)
             mainJob.getCompletionExceptionOrNull()?.let { throw it }
 
-            transaction {
-                assertEquals(5, Testing.selectAll().count())
+            assertEquals(5L, Testing.selectAll().count())
+        }
+    }
+
+    @Test @RepeatableTest(10)
+    fun suspendedAndNormalTransactions() {
+        var db : Database? = null
+        withDb {
+            db = this.db
+            SchemaUtils.create(Testing)
+        }
+
+        var suspendedOk = true
+        var normalOk = true
+        val mainJob = GlobalScope.launch {
+            newSuspendedTransaction(singleThreadDispatcher, db = db) {
+                try {
+                    Testing.selectAll().toList()
+                } catch (e: Exception) {
+                    suspendedOk = false
+                }
             }
+
+            transaction(db) {
+                try {
+                    Testing.selectAll().toList()
+                } catch (e: Exception) {
+                    normalOk = false
+                }
+            }
+        }
+
+        runBlocking {
+            mainJob.join()
+            kotlin.test.assertTrue(suspendedOk)
+            kotlin.test.assertTrue(normalOk)
+        }
+//            while (!mainJob.isCompleted) Thread.sleep(100)
+//            mainJob.getCompletionExceptionOrNull()?.let { throw it }
+    }
+
+    class TestingEntity(id: EntityID<Int>) : IntEntity(id) {
+        companion object : IntEntityClass<TestingEntity>(Testing)
+    }
+
+    @Test fun testCoroutinesWithExceptionWithin() {
+        withTables(Testing) {
+            val id = Testing.insertAndGetId {}
+            commit()
+
+            var connection: ExposedConnection<*>? = null
+            val mainJob = GlobalScope.async(singleThreadDispatcher) {
+                suspendedTransactionAsync(db = db) {
+                    connection = this.connection
+                    TestingEntity.new(id.value) {}
+                }.await()
+            }
+
+            while (!mainJob.isCompleted) Thread.sleep(100)
+            assertNotNull(connection)
+            assertTrue(connection!!.isClosed)
+            assertTrue(mainJob.getCompletionExceptionOrNull() is ExposedSQLException)
+            assertEquals(1, Testing.selectAll().count())
         }
     }
 }

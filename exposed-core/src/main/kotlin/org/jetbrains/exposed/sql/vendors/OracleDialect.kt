@@ -5,19 +5,25 @@ import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.TransactionManager
 
 internal object OracleDataTypeProvider : DataTypeProvider() {
+    override fun byteType(): String = "SMALLINT"
+    override fun ubyteType(): String = "SMALLINT"
     override fun integerType(): String = "NUMBER(12)"
     override fun integerAutoincType(): String = "NUMBER(12)"
+    override fun uintegerType(): String = "NUMBER(13)"
     override fun longType(): String = "NUMBER(19)"
     override fun longAutoincType(): String = "NUMBER(19)"
+    override fun ulongType(): String = "NUMBER(20)"
     override fun textType(): String = "CLOB"
-    override fun binaryType(): String = "BLOB"
-    override fun binaryType(length: Int): String {
-        exposedLogger.warn("The length of the binary column is not required.")
-        return binaryType()
+    override fun binaryType(): String {
+        exposedLogger.error("Binary type is unsupported for Oracle. Please use blob column type instead.")
+        error("Binary type is unsupported for Oracle. Please use blob column type instead.")
     }
 
-    override val blobAsStream = true
-    override fun blobType(): String = "BLOB"
+    override fun binaryType(length: Int): String {
+        return if (length < 2000) "RAW ($length)"
+        else binaryType()
+    }
+
     override fun uuidType(): String = "RAW(16)"
     override fun dateTimeType(): String = "TIMESTAMP"
     override fun booleanType(): String = "CHAR(1)"
@@ -29,7 +35,8 @@ internal object OracleDataTypeProvider : DataTypeProvider() {
     }
 
     override fun processForDefaultValue(e: Expression<*>): String = when {
-        e is LiteralOp<*> && e.columnType is IDateColumnType -> "DATE ${super.processForDefaultValue(e)}"
+        e is LiteralOp<*> && (e.columnType as? IDateColumnType)?.hasTimePart == false -> "DATE ${super.processForDefaultValue(e)}"
+        e is LiteralOp<*> && e.columnType is IDateColumnType -> "TIMESTAMP ${super.processForDefaultValue(e)}"
         else -> super.processForDefaultValue(e)
     }
 }
@@ -51,10 +58,10 @@ internal object OracleFunctionProvider : FunctionProvider() {
         prefix: String
     ): Unit = super.substring(expr, start, length, builder, "SUBSTR")
 
-    override fun <T : String?> concat(
+    override fun concat(
         separator: String,
         queryBuilder: QueryBuilder,
-        vararg expr: Expression<T>
+        vararg expr: Expression<*>
     ): Unit = queryBuilder {
         if (separator == "") {
             expr.toList().appendTo(separator = " || ") { +it }
@@ -135,18 +142,58 @@ internal object OracleFunctionProvider : FunctionProvider() {
     }
 
     override fun update(
-        targets: ColumnSet,
+        target: Table,
         columnsAndValues: List<Pair<Column<*>, Any?>>,
         limit: Int?,
         where: Op<Boolean>?,
         transaction: Transaction
     ): String {
-        val def = super.update(targets, columnsAndValues, null, where, transaction)
+        val def = super.update(target, columnsAndValues, null, where, transaction)
         return when {
             limit != null && where != null -> "$def AND ROWNUM <= $limit"
             limit != null -> "$def WHERE ROWNUM <= $limit"
             else -> def
         }
+    }
+
+    override fun update(
+        targets: Join,
+        columnsAndValues: List<Pair<Column<*>, Any?>>,
+        limit: Int?,
+        where: Op<Boolean>?,
+        transaction: Transaction
+    ): String = with(QueryBuilder(true)) {
+        columnsAndValues.map { it.first.table }.distinct().singleOrNull()
+            ?: transaction.throwUnsupportedException("Oracle supports a join updates with a single table columns to update.")
+        if (targets.joinParts.any { it.joinType != JoinType.INNER }) {
+            exposedLogger.warn("All tables in UPDATE statement will be joined with inner join")
+        }
+        +"UPDATE ("
+        val columnsToSelect = columnsAndValues.flatMap {
+            listOfNotNull(it.first, it.second as? Expression<*>)
+        }.mapIndexed { index, expression -> expression to expression.alias("c$index") }.toMap()
+
+        val subQuery = targets.slice(columnsToSelect.values.toList()).selectAll()
+        where?.let {
+            subQuery.adjustWhere { it }
+        }
+        subQuery.prepareSQL(this)
+        +") x"
+
+        columnsAndValues.appendTo(this, prefix = " SET ") { (col, value) ->
+            val alias = columnsToSelect.getValue(col)
+            +alias.alias
+            +"="
+            (value as? Expression<*>)?.let {
+                +columnsToSelect.getValue(it).alias
+            } ?: registerArgument(col, value)
+        }
+
+        limit?.let {
+            "WHERE ROWNUM <= $it"
+        }
+
+        toString()
     }
 
     override fun delete(
@@ -162,7 +209,7 @@ internal object OracleFunctionProvider : FunctionProvider() {
         return super.delete(ignore, table, where, limit, transaction)
     }
 
-    override fun queryLimit(size: Int, offset: Int, alreadyOrdered: Boolean): String {
+    override fun queryLimit(size: Int, offset: Long, alreadyOrdered: Boolean): String {
         return (if (offset > 0) " OFFSET $offset ROWS" else "") + " FETCH FIRST $size ROWS ONLY"
     }
 }
@@ -185,6 +232,29 @@ open class OracleDialect : VendorDialect(dialectName, OracleDataTypeProvider, Or
     override fun createDatabase(name: String): String = "CREATE DATABASE ${name.inProperCase()}"
 
     override fun dropDatabase(name: String): String = "DROP DATABASE ${name.inProperCase()}"
+
+    override fun setSchema(schema: Schema): String = "ALTER SESSION SET CURRENT_SCHEMA = ${schema.identifier}"
+
+    override fun createSchema(schema: Schema): String = buildString {
+        if ((schema.quota == null) xor (schema.on == null)) {
+            throw IllegalArgumentException("You must either provide both <quota> and <on> options or non of them")
+        }
+
+        append("CREATE USER ", schema.identifier)
+        append(" IDENTIFIED BY ", schema.password)
+        appendIfNotNull(" DEFAULT TABLESPACE ", schema.defaultTablespace)
+        appendIfNotNull(" TEMPORARY TABLESPACE ", schema.temporaryTablespace)
+        appendIfNotNull(" QUOTA ", schema.quota)
+        appendIfNotNull(" ON ", schema.on)
+    }
+
+    override fun dropSchema(schema: Schema, cascade: Boolean): String = buildString {
+        append("DROP USER ", schema.identifier)
+
+        if(cascade) {
+            append(" CASCADE")
+        }
+    }
 
     companion object {
         /** Oracle dialect name */

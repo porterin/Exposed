@@ -17,12 +17,12 @@ import org.jetbrains.exposed.sql.tests.shared.assertEqualCollections
 import org.jetbrains.exposed.sql.tests.shared.assertEqualLists
 import org.jetbrains.exposed.sql.tests.shared.assertEquals
 import org.jetbrains.exposed.sql.tests.shared.expectException
+import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.vendors.MysqlDialect
 import org.jetbrains.exposed.sql.vendors.OracleDialect
 import org.jetbrains.exposed.sql.vendors.SQLServerDialect
 import org.junit.Test
-import java.time.LocalDate
-import java.time.LocalDateTime
+import java.time.*
 
 class DefaultsTest : DatabaseTestsBase() {
     object TableWithDBDefault : IntIdTable() {
@@ -32,7 +32,7 @@ class DefaultsTest : DatabaseTestsBase() {
         val clientDefault = integer("clientDefault").clientDefault { cIndex++ }
     }
 
-    class DBDefault(id: EntityID<Int>): IntEntity(id) {
+    class DBDefault(id: EntityID<Int>) : IntEntity(id) {
         var field by TableWithDBDefault.field
         var t1 by TableWithDBDefault.t1
         val clientDefault by TableWithDBDefault.clientDefault
@@ -50,11 +50,11 @@ class DefaultsTest : DatabaseTestsBase() {
     fun testDefaultsWithExplicit01() {
         withTables(TableWithDBDefault) {
             val created = listOf(
-                    DBDefault.new { field = "1" },
-                    DBDefault.new {
-                        field = "2"
-                        t1 = LocalDateTime.now().minusDays(5)
-                    })
+                DBDefault.new { field = "1" },
+                DBDefault.new {
+                    field = "2"
+                    t1 = LocalDateTime.now().minusDays(5)
+                })
             commit()
             created.forEach {
                 DBDefault.removeFromCache(it)
@@ -69,10 +69,10 @@ class DefaultsTest : DatabaseTestsBase() {
     fun testDefaultsWithExplicit02() {
         withTables(TableWithDBDefault) {
             val created = listOf(
-                    DBDefault.new{
-                        field = "2"
-                        t1 = LocalDateTime.now().minusDays(5)
-                    }, DBDefault.new{ field = "1" })
+                DBDefault.new {
+                    field = "2"
+                    t1 = LocalDateTime.now().minusDays(5)
+                }, DBDefault.new { field = "1" })
 
             flushCache()
             created.forEach {
@@ -87,8 +87,8 @@ class DefaultsTest : DatabaseTestsBase() {
     fun testDefaultsInvokedOnlyOncePerEntity() {
         withTables(TableWithDBDefault) {
             TableWithDBDefault.cIndex = 0
-            val db1 = DBDefault.new{ field = "1" }
-            val db2 = DBDefault.new{ field = "2" }
+            val db1 = DBDefault.new { field = "1" }
+            val db2 = DBDefault.new { field = "2" }
             flushCache()
             assertEquals(0, db1.clientDefault)
             assertEquals(1, db2.clientDefault)
@@ -153,6 +153,11 @@ class DefaultsTest : DatabaseTestsBase() {
         val dtConstValue = LocalDate.of(2010, 1, 1)
         val dLiteral = dateLiteral(dtConstValue)
         val dtLiteral = dateTimeLiteral(dtConstValue.atStartOfDay())
+        val tsConstValue = dtConstValue.atStartOfDay(ZoneOffset.UTC).plusSeconds(42).toInstant()
+        val tsLiteral = timestampLiteral(tsConstValue)
+        val durConstValue = Duration.between(Instant.EPOCH, tsConstValue)
+        val durLiteral = durationLiteral(durConstValue)
+
         val TestTable = object : IntIdTable("t") {
             val s = varchar("s", 100).default("test")
             val sn = varchar("sn", 100).default("testNullable").nullable()
@@ -162,16 +167,21 @@ class DefaultsTest : DatabaseTestsBase() {
             val t2 = datetime("t2").defaultExpression(nowExpression)
             val t3 = datetime("t3").defaultExpression(dtLiteral)
             val t4 = date("t4").default(dtConstValue)
+            val t5 = timestamp("t5").default(tsConstValue)
+            val t6 = timestamp("t6").defaultExpression(tsLiteral)
+            val t7 = duration("t7").default(durConstValue)
+            val t8 = duration("t8").defaultExpression(durLiteral)
         }
 
         fun Expression<*>.itOrNull() = when {
-            currentDialectTest.isAllowedAsColumnDefault(this)  ->
+            currentDialectTest.isAllowedAsColumnDefault(this) ->
                 "DEFAULT ${currentDialectTest.dataTypeProvider.processForDefaultValue(this)} NOT NULL"
             else -> "NULL"
         }
 
         withTables(listOf(TestDB.SQLITE), TestTable) {
             val dtType = currentDialectTest.dataTypeProvider.dateTimeType()
+            val longType = currentDialectTest.dataTypeProvider.longType()
             val q = db.identifierManager.quoteString
             val baseExpression = "CREATE TABLE " + addIfNotExistsIfSupported() +
                     "${"t".inProperCase()} (" +
@@ -183,7 +193,11 @@ class DefaultsTest : DatabaseTestsBase() {
                     "${"t1".inProperCase()} $dtType ${currentDT.itOrNull()}, " +
                     "${"t2".inProperCase()} $dtType ${nowExpression.itOrNull()}, " +
                     "${"t3".inProperCase()} $dtType ${dtLiteral.itOrNull()}, " +
-                    "${"t4".inProperCase()} DATE ${dLiteral.itOrNull()}" +
+                    "${"t4".inProperCase()} DATE ${dLiteral.itOrNull()}, " +
+                    "${"t5".inProperCase()} $dtType ${tsLiteral.itOrNull()}, " +
+                    "${"t6".inProperCase()} $dtType ${tsLiteral.itOrNull()}, " +
+                    "${"t7".inProperCase()} $longType ${durLiteral.itOrNull()}, " +
+                    "${"t8".inProperCase()} $longType ${durLiteral.itOrNull()}" +
                     ")"
 
             val expected = if (currentDialectTest is OracleDialect)
@@ -193,7 +207,7 @@ class DefaultsTest : DatabaseTestsBase() {
 
             assertEqualLists(expected, TestTable.ddl)
 
-            val id1 = TestTable.insertAndGetId {  }
+            val id1 = TestTable.insertAndGetId { }
 
             val row1 = TestTable.select { TestTable.id eq id1 }.single()
             assertEquals("test", row1[TestTable.s])
@@ -202,10 +216,10 @@ class DefaultsTest : DatabaseTestsBase() {
             assertEquals('X', row1[TestTable.c])
             assertEqualDateTime(dtConstValue.atStartOfDay(), row1[TestTable.t3])
             assertEqualDateTime(dtConstValue, row1[TestTable.t4])
-
-            val id2 = TestTable.insertAndGetId { it[TestTable.sn] = null }
-
-            val row2 = TestTable.select { TestTable.id eq id2 }.single()
+            assertEqualDateTime(tsConstValue, row1[TestTable.t5])
+            assertEqualDateTime(tsConstValue, row1[TestTable.t6])
+            assertEquals(durConstValue, row1[TestTable.t7])
+            assertEquals(durConstValue, row1[TestTable.t8])
         }
     }
 
@@ -255,13 +269,29 @@ class DefaultsTest : DatabaseTestsBase() {
             assertEquals("bar", result[foo.name])
             assertEqualDateTime(nonDefaultDate, result[foo.defaultDateTime])
 
-            foo.update({foo.id eq id}) {
+            foo.update({ foo.id eq id }) {
                 it[foo.name] = "baz"
             }
 
             val result2 = foo.select { foo.id eq id }.single()
             assertEquals("baz", result2[foo.name])
             assertEqualDateTime(nonDefaultDate, result2[foo.defaultDateTime])
+        }
+    }
+
+    @Test
+    fun testBetweenFunction() {
+        val foo = object : IntIdTable("foo") {
+            val dt = datetime("dateTime")
+        }
+
+        withTables(foo) {
+            val dt2020 = LocalDateTime.of(2020, 1, 1, 1, 1)
+            foo.insert { it[dt] = LocalDateTime.of(2019, 1, 1, 1, 1) }
+            foo.insert { it[dt] = dt2020 }
+            foo.insert { it[dt] = LocalDateTime.of(2021, 1, 1, 1, 1) }
+            val count = foo.select { foo.dt.between(dt2020.minusWeeks(1), dt2020.plusWeeks(1)) }.count()
+            assertEquals(1, count)
         }
     }
 }

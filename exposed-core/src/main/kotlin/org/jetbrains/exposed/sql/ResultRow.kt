@@ -1,9 +1,11 @@
 package org.jetbrains.exposed.sql
 
 import org.jetbrains.exposed.sql.transactions.TransactionManager
+import org.jetbrains.exposed.sql.vendors.withDialect
 import java.sql.ResultSet
 
 class ResultRow(val fieldIndex: Map<Expression<*>, Int>) {
+    private val database : Database? = TransactionManager.currentOrNull()?.db
     private val data = arrayOfNulls<Any?>(fieldIndex.size)
 
     /**
@@ -22,7 +24,11 @@ class ResultRow(val fieldIndex: Map<Expression<*>, Int>) {
                     "has default db value, but returns null. Possible have to re-read it from DB.")
         }
 
-        return rawToColumnValue(d, c)
+        return database?.dialect?.let {
+            withDialect(it) {
+                rawToColumnValue(d, c)
+            }
+        } ?: rawToColumnValue(d, c)
     }
 
     operator fun <T> set(c: Expression<out T>, value: T) {
@@ -49,8 +55,21 @@ class ResultRow(val fieldIndex: Map<Expression<*>, Int>) {
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun <T> getRaw(c: Expression<T>): T? =
-            data[fieldIndex[c] ?: error("$c is not in record set")] as T?
+    private fun <T> getRaw(c: Expression<T>): T? {
+        if (c is CompositeColumn<T>) {
+            val rawParts = c.getRealColumns().associateWith { getRaw(it) }
+            return c.restoreValueFromParts(rawParts)
+        }
+
+        val index = fieldIndex[c]
+            ?: ((c as? Column<*>)?.columnType as? EntityIDColumnType<*>)?.let { fieldIndex[it.idColumn] }
+            ?: fieldIndex.keys.firstOrNull {
+                ((it as? Column<*>)?.columnType as? EntityIDColumnType<*>)?.idColumn == c
+            }?.let { fieldIndex[it] }
+            ?: error("$c is not in record set")
+
+        return data[index] as T?
+    }
 
     override fun toString(): String =
             fieldIndex.entries.joinToString { "${it.key}=${data[it.value]}" }

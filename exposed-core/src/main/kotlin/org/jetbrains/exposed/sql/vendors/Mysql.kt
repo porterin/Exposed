@@ -1,16 +1,28 @@
 package org.jetbrains.exposed.sql.vendors
 
+import org.jetbrains.exposed.exceptions.UnsupportedByDialectException
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.TransactionManager
 import java.math.BigDecimal
 
 internal object MysqlDataTypeProvider : DataTypeProvider() {
+
     override fun binaryType(): String {
         exposedLogger.error("The length of the Binary column is missing.")
         error("The length of the Binary column is missing.")
     }
 
     override fun dateTimeType(): String = if ((currentDialect as MysqlDialect).isFractionDateTimeSupported()) "DATETIME(6)" else "DATETIME"
+
+    override fun ubyteType(): String = "TINYINT UNSIGNED"
+
+    override fun ushortType(): String = "SMALLINT UNSIGNED"
+
+    override fun uintegerType(): String = "INT UNSIGNED"
+
+    override fun ulongType(): String = "BIGINT UNSIGNED"
+
+    override fun textType(): String = "longtext"
 }
 
 internal open class MysqlFunctionProvider : FunctionProvider() {
@@ -18,7 +30,7 @@ internal open class MysqlFunctionProvider : FunctionProvider() {
 
     override fun random(seed: Int?): String = "RAND(${seed?.toString().orEmpty()})"
 
-    private class MATCH(val expr: ExpressionWithColumnType<*>, val pattern: String, val mode: MatchMode) : Op<Boolean>() {
+    private class MATCH(val expr: Expression<*>, val pattern: String, val mode: MatchMode) : Op<Boolean>() {
         override fun toQueryBuilder(queryBuilder: QueryBuilder) = queryBuilder {
             append("MATCH(", expr, ") AGAINST ('", pattern, "' ", mode.mode(), ")")
         }
@@ -31,7 +43,7 @@ internal open class MysqlFunctionProvider : FunctionProvider() {
         override fun mode() = operator
     }
 
-    override fun <T : String?> ExpressionWithColumnType<T>.match(pattern: String, mode: MatchMode?): Op<Boolean> =
+    override fun <T : String?> Expression<T>.match(pattern: String, mode: MatchMode?): Op<Boolean> =
         MATCH(this, pattern, mode ?: MysqlMatchMode.STRICT)
 
     override fun <T : String?> regexp(
@@ -74,6 +86,29 @@ internal open class MysqlFunctionProvider : FunctionProvider() {
         val def = super.delete(false, table, where, limit, transaction)
         return if (ignore) def.replaceFirst("DELETE", "DELETE IGNORE") else def
     }
+
+    override fun update(
+        targets: Join,
+        columnsAndValues: List<Pair<Column<*>, Any?>>,
+        limit: Int?,
+        where: Op<Boolean>?,
+        transaction: Transaction
+    ): String = with(QueryBuilder(true)) {
+        +"UPDATE "
+        targets.describe(transaction, this)
+        +" SET "
+        columnsAndValues.appendTo(this) { (col, value) ->
+            append("${transaction.fullIdentity(col)}=")
+            registerArgument(col, value)
+        }
+
+        where?.let {
+            +" WHERE "
+            +it
+        }
+        limit?.let { +" LIMIT $it" }
+        toString()
+    }
 }
 
 /**
@@ -86,6 +121,8 @@ open class MysqlDialect : VendorDialect(dialectName, MysqlDataTypeProvider, Mysq
     }
 
     override val supportsCreateSequence: Boolean = false
+
+    override val supportsSubqueryUnions: Boolean = true
 
     fun isFractionDateTimeSupported(): Boolean = TransactionManager.current().db.isVersionCovers(BigDecimal("5.6"))
 
@@ -123,22 +160,27 @@ open class MysqlDialect : VendorDialect(dialectName, MysqlDataTypeProvider, Mysq
                 val fromTableName = rs.getString("TABLE_NAME")!!
                 if (fromTableName !in allTableNames) continue
                 val fromColumnName = rs.getString("COLUMN_NAME")!!.quoteIdentifierWhenWrongCaseOrNecessary(tr)
-                val fromColumn = allTables.getValue(fromTableName).columns.first { it.nameInDatabaseCase() == fromColumnName }
-                val constraintName = rs.getString("CONSTRAINT_NAME")!!
-                val targetTableName = rs.getString("REFERENCED_TABLE_NAME")!!
-                val targetColumnName = rs.getString("REFERENCED_COLUMN_NAME")!!.quoteIdentifierWhenWrongCaseOrNecessary(tr)
-                val targetColumn = allTables.getValue(targetTableName).columns.first { it.nameInDatabaseCase() == targetColumnName }
-                val constraintUpdateRule = ReferenceOption.valueOf(rs.getString("UPDATE_RULE")!!.replace(" ", "_"))
-                val constraintDeleteRule = ReferenceOption.valueOf(rs.getString("DELETE_RULE")!!.replace(" ", "_"))
-                constraintsToLoad.getOrPut(fromTableName) { arrayListOf() }.add(
+                allTables.getValue(fromTableName).columns.firstOrNull {
+                    it.nameInDatabaseCase().quoteIdentifierWhenWrongCaseOrNecessary(tr) == fromColumnName
+                }?.let { fromColumn ->
+                    val constraintName = rs.getString("CONSTRAINT_NAME")!!
+                    val targetTableName = rs.getString("REFERENCED_TABLE_NAME")!!
+                    val targetColumnName = rs.getString("REFERENCED_COLUMN_NAME")!!.quoteIdentifierWhenWrongCaseOrNecessary(tr)
+                    val targetColumn = allTables.getValue(targetTableName).columns.first {
+                        it.nameInDatabaseCase().quoteIdentifierWhenWrongCaseOrNecessary(tr) == targetColumnName
+                    }
+                    val constraintUpdateRule = ReferenceOption.valueOf(rs.getString("UPDATE_RULE")!!.replace(" ", "_"))
+                    val constraintDeleteRule = ReferenceOption.valueOf(rs.getString("DELETE_RULE")!!.replace(" ", "_"))
+                    constraintsToLoad.getOrPut(fromTableName) { arrayListOf() }.add(
                         ForeignKeyConstraint(
-                                target = targetColumn,
-                                from = fromColumn,
-                                onUpdate = constraintUpdateRule,
-                                onDelete = constraintDeleteRule,
-                                name = constraintName
+                            target = targetColumn,
+                            from = fromColumn,
+                            onUpdate = constraintUpdateRule,
+                            onDelete = constraintDeleteRule,
+                            name = constraintName
                         )
-                )
+                    )
+                }
             }
 
             columnConstraintsCache.putAll(constraintsToLoad)
@@ -146,6 +188,20 @@ open class MysqlDialect : VendorDialect(dialectName, MysqlDataTypeProvider, Mysq
     }
 
     override fun dropIndex(tableName: String, indexName: String): String = "ALTER TABLE $tableName DROP INDEX $indexName"
+
+    override fun setSchema(schema: Schema): String = "USE ${schema.identifier}"
+
+    override fun createSchema(schema: Schema): String = buildString {
+        append("CREATE SCHEMA IF NOT EXISTS ", schema.identifier)
+
+        if (schema.authorization != null) {
+            throw UnsupportedByDialectException("${currentDialect.name} do not have database owners. " +
+                    "You can use GRANT to allow or deny rights on database.", currentDialect)
+        }
+
+    }
+
+    override fun dropSchema(schema: Schema, cascade: Boolean): String = "DROP SCHEMA IF EXISTS ${schema.identifier}"
 
     companion object {
         /** MySQL dialect name */

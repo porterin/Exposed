@@ -18,8 +18,10 @@ object ViaTestData {
     }
 
     object StringsTable: IdTable<Long>("") {
-        override val id: Column<EntityID<Long>> = long("id").autoIncrement().primaryKey().entityId()
+        override val id: Column<EntityID<Long>> = long("id").autoIncrement().entityId()
         val text = varchar("text", 10)
+
+        override val primaryKey = PrimaryKey(id)
     }
 
     object ConnectionTable: Table() {
@@ -160,8 +162,8 @@ class ViaTests : DatabaseTestsBase() {
             }
             child1.parents = SizedCollection(root)
 
-            assertEquals(0, root.parents.count())
-            assertEquals(1, root.children.count())
+            assertEquals(0L, root.parents.count())
+            assertEquals(1L, root.children.count())
 
             val child2 = Node.new { name = "child2" }
             root.children = SizedCollection(listOf(child1, child2))

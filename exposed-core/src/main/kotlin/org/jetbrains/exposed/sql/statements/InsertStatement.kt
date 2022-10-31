@@ -8,14 +8,16 @@ import org.jetbrains.exposed.sql.vendors.inProperCase
 import java.sql.ResultSet
 import java.sql.SQLException
 
-/**
- * isIgnore is supported for mysql only
- */
 open class InsertStatement<Key:Any>(val table: Table, val isIgnore: Boolean = false) : UpdateBuilder<Int>(StatementType.INSERT, listOf(table)) {
     var resultedValues: List<ResultRow>? = null
         private set
 
     infix operator fun <T> get(column: Column<T>): T {
+        val row = resultedValues?.firstOrNull() ?: error("No key generated")
+        return row[column]
+    }
+
+    infix operator fun <T> get(column: CompositeColumn<T>): T {
         val row = resultedValues?.firstOrNull() ?: error("No key generated")
         return row[column]
     }
@@ -71,7 +73,7 @@ open class InsertStatement<Key:Any>(val table: Table, val isIgnore: Boolean = fa
             }
             pairs.forEach { (col, value) ->
                 if (value != DefaultValueMarker) {
-                    if (col.columnType.isAutoInc || value is NextVal)
+                    if (col.columnType.isAutoInc || value is NextVal<*>)
                         map.getOrPut(col) { value }
                     else
                         map[col] = value
@@ -119,7 +121,7 @@ open class InsertStatement<Key:Any>(val table: Table, val isIgnore: Boolean = fa
     }
 
     protected val autoIncColumns : List<Column<*>> get() {
-        val nextValExpressionColumns = values.filterValues { it is NextVal }.keys
+        val nextValExpressionColumns = values.filterValues { it is NextVal<*> }.keys
         return targets.flatMap { it.columns }.filter { column ->
             when {
                 column.columnType.isAutoInc -> true
@@ -141,7 +143,7 @@ open class InsertStatement<Key:Any>(val table: Table, val isIgnore: Boolean = fa
             transaction.connection.prepareStatement(sql, autoIncColumns.map { it.name.inProperCase() }.toTypedArray())
 
         else ->
-            transaction.connection.prepareStatement(sql, true)
+            transaction.connection.prepareStatement(sql, false)
     }
 
     protected open var arguments: List<List<Pair<Column<*>, Any?>>>? = null
@@ -152,9 +154,15 @@ open class InsertStatement<Key:Any>(val table: Table, val isIgnore: Boolean = fa
             listOf(result).apply { field = this }
         }
 
-    override fun arguments() = arguments!!.map { args ->
-        args.filter { (_, value) ->
-            value != DefaultValueMarker  && value !is Expression<*>
-        }.map { it.first.columnType to it.second }
+    override fun arguments() : List<Iterable<Pair<IColumnType, Any?>>> {
+        return arguments!!.map { args ->
+            val builder = QueryBuilder(true)
+            args.filter { (_, value) ->
+                value != DefaultValueMarker
+            }.forEach { (column, value) ->
+                builder.registerArgument(column, value)
+            }
+            builder.args
+        }
     }
 }

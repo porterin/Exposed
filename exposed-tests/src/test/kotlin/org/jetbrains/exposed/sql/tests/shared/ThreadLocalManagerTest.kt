@@ -55,7 +55,7 @@ class ConnectionTimeoutTest : DatabaseTestsBase(){
         val db = Database.connect(datasource = datasource)
 
         try {
-            transaction(db.transactionManager.defaultIsolationLevel, 42, db) {
+            transaction(Connection.TRANSACTION_SERIALIZABLE, 42, db) {
                 exec("SELECT 1;")
                 // NO OP
             }
@@ -117,7 +117,7 @@ class ConnectionExceptions {
         val wrappingDataSource = ConnectionExceptions.WrappingDataSource(TestDB.H2, connectionDecorator)
         val db = Database.connect(datasource = wrappingDataSource)
         try {
-            transaction(db.transactionManager.defaultIsolationLevel, 5, db) {
+            transaction(Connection.TRANSACTION_SERIALIZABLE, 5, db) {
                 this.exec("BROKEN_SQL_THAT_CAUSES_EXCEPTION()")
             }
             fail("Should have thrown an exception")
@@ -150,7 +150,7 @@ class ConnectionExceptions {
         val wrappingDataSource = WrappingDataSource(TestDB.H2, connectionDecorator)
         val db = Database.connect(datasource = wrappingDataSource)
         try {
-            transaction(db.transactionManager.defaultIsolationLevel, 5, db) {
+            transaction(Connection.TRANSACTION_SERIALIZABLE, 5, db) {
                 this.exec("SELECT 1;")
             }
             fail("Should have thrown an exception")
@@ -173,7 +173,7 @@ class ConnectionExceptions {
         val wrappingDataSource = ConnectionExceptions.WrappingDataSource(TestDB.H2, connectionDecorator)
         val db = Database.connect(datasource = wrappingDataSource)
         try {
-            transaction(db.transactionManager.defaultIsolationLevel, 5, db) {
+            transaction(Connection.TRANSACTION_SERIALIZABLE, 5, db) {
                 this.exec("SELECT 1;")
             }
             fail("Should have thrown an exception")
@@ -268,18 +268,18 @@ class RollbackTransactionTest : DatabaseTestsBase() {
             inTopLevelTransaction(db.transactionManager.defaultIsolationLevel, 1) {
                 RollbackTable.insert { it[value] = "before-dummy" }
                 transaction {
-                    assertEquals(1, RollbackTable.select { RollbackTable.value eq "before-dummy" }.count())
+                    assertEquals(1L, RollbackTable.select { RollbackTable.value eq "before-dummy" }.count())
                     RollbackTable.insert { it[value] = "inner-dummy" }
                 }
-                assertEquals(1, RollbackTable.select { RollbackTable.value eq "before-dummy" }.count())
-                assertEquals(1, RollbackTable.select { RollbackTable.value eq "inner-dummy" }.count())
+                assertEquals(1L, RollbackTable.select { RollbackTable.value eq "before-dummy" }.count())
+                assertEquals(1L, RollbackTable.select { RollbackTable.value eq "inner-dummy" }.count())
                 RollbackTable.insert { it[value] = "after-dummy" }
-                assertEquals(1, RollbackTable.select { RollbackTable.value eq "after-dummy" }.count())
+                assertEquals(1L, RollbackTable.select { RollbackTable.value eq "after-dummy" }.count())
                 rollback()
             }
-            assertEquals(0, RollbackTable.select { RollbackTable.value eq "before-dummy" }.count())
-            assertEquals(0, RollbackTable.select { RollbackTable.value eq "inner-dummy" }.count())
-            assertEquals(0, RollbackTable.select { RollbackTable.value eq "after-dummy" }.count())
+            assertEquals(0L, RollbackTable.select { RollbackTable.value eq "before-dummy" }.count())
+            assertEquals(0L, RollbackTable.select { RollbackTable.value eq "inner-dummy" }.count())
+            assertEquals(0L, RollbackTable.select { RollbackTable.value eq "after-dummy" }.count())
         }
     }
 
@@ -291,19 +291,19 @@ class RollbackTransactionTest : DatabaseTestsBase() {
                 inTopLevelTransaction(db.transactionManager.defaultIsolationLevel, 1) {
                     RollbackTable.insert { it[value] = "before-dummy" }
                     transaction {
-                        assertEquals(1, RollbackTable.select { RollbackTable.value eq "before-dummy" }.count())
+                        assertEquals(1L, RollbackTable.select { RollbackTable.value eq "before-dummy" }.count())
                         RollbackTable.insert { it[value] = "inner-dummy" }
                         rollback()
                     }
-                    assertEquals(1, RollbackTable.select { RollbackTable.value eq "before-dummy" }.count())
-                    assertEquals(0, RollbackTable.select { RollbackTable.value eq "inner-dummy" }.count())
+                    assertEquals(1L, RollbackTable.select { RollbackTable.value eq "before-dummy" }.count())
+                    assertEquals(0L, RollbackTable.select { RollbackTable.value eq "inner-dummy" }.count())
                     RollbackTable.insert { it[value] = "after-dummy" }
-                    assertEquals(1, RollbackTable.select { RollbackTable.value eq "after-dummy" }.count())
+                    assertEquals(1L, RollbackTable.select { RollbackTable.value eq "after-dummy" }.count())
                     rollback()
                 }
-                assertEquals(0, RollbackTable.select { RollbackTable.value eq "before-dummy" }.count())
-                assertEquals(0, RollbackTable.select { RollbackTable.value eq "inner-dummy" }.count())
-                assertEquals(0, RollbackTable.select { RollbackTable.value eq "after-dummy" }.count())
+                assertEquals(0L, RollbackTable.select { RollbackTable.value eq "before-dummy" }.count())
+                assertEquals(0L, RollbackTable.select { RollbackTable.value eq "inner-dummy" }.count())
+                assertEquals(0L, RollbackTable.select { RollbackTable.value eq "after-dummy" }.count())
             } finally {
                 db.useNestedTransactions = false
             }
@@ -319,5 +319,26 @@ class TransactionIsolationTest : DatabaseTestsBase() {
                 assertEquals(Connection.TRANSACTION_SERIALIZABLE, this.connection.transactionIsolation)
             }
         }
+    }
+}
+
+class TransactionManagerResetTest {
+    @Test
+    fun `test closeAndUnregister with next Database-connect works fine`() {
+        val initialManager = TransactionManager.manager
+        val db1 = TestDB.H2.connect()
+        val db1TransactionManager = TransactionManager.managerFor(db1)
+        assertEquals(initialManager, TransactionManager.manager)
+        transaction(db1) {
+            assertEquals(db1TransactionManager, TransactionManager.manager)
+            exec("SELECT 1 from dual;")
+        }
+        TransactionManager.closeAndUnregister(db1)
+        assertEquals(initialManager, TransactionManager.manager)
+        val db2 = TestDB.H2.connect()
+        // Check should be made in a separate thread as in current thread manager is already initialized
+        thread {
+            assertEquals(TransactionManager.managerFor(db2), TransactionManager.manager)
+        }.join()
     }
 }

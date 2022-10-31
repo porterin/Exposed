@@ -6,10 +6,7 @@ import org.jetbrains.exposed.dao.flushCache
 import org.jetbrains.exposed.dao.id.EntityID
 import org.jetbrains.exposed.dao.id.IntIdTable
 import org.jetbrains.exposed.sql.*
-import org.jetbrains.exposed.sql.jodatime.CurrentDateTime
-import org.jetbrains.exposed.sql.jodatime.date
-import org.jetbrains.exposed.sql.jodatime.dateLiteral
-import org.jetbrains.exposed.sql.jodatime.datetime
+import org.jetbrains.exposed.sql.jodatime.*
 import org.jetbrains.exposed.sql.statements.BatchDataInconsistentException
 import org.jetbrains.exposed.sql.statements.BatchInsertStatement
 import org.jetbrains.exposed.sql.tests.TestDB
@@ -19,6 +16,7 @@ import org.jetbrains.exposed.sql.tests.shared.assertEqualCollections
 import org.jetbrains.exposed.sql.tests.shared.assertEqualLists
 import org.jetbrains.exposed.sql.tests.shared.assertEquals
 import org.jetbrains.exposed.sql.tests.shared.expectException
+import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.vendors.MysqlDialect
 import org.jetbrains.exposed.sql.vendors.OracleDialect
 import org.jetbrains.exposed.sql.vendors.SQLServerDialect
@@ -26,6 +24,8 @@ import org.jetbrains.exposed.sql.vendors.currentDialect
 import org.joda.time.DateTime
 import org.joda.time.DateTimeZone
 import org.junit.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 
 class JodaTimeDefaultsTest : JodaTimeBaseTest() {
     object TableWithDBDefault : IntIdTable() {
@@ -255,4 +255,96 @@ class JodaTimeDefaultsTest : JodaTimeBaseTest() {
             assertEqualDateTime(nonDefaultDate, result2[foo.defaultDateTime])
         }
     }
+
+    @Test
+    fun defaultCurrentDateTimeTest() {
+        val TestDate = object : IntIdTable("TestDate") {
+            val time = datetime("time").defaultExpression(CurrentDateTime())
+        }
+
+        withTables(TestDate) {
+            val duration: Long = 2_000
+
+            val before = currentDateTime()
+            Thread.sleep(duration)
+            for (i in 0..1) {
+                TestDate.insertAndWait(duration)
+            }
+            val middle = currentDateTime()
+            Thread.sleep(duration)
+            for (i in 0..1) {
+                TestDate.insertAndWait(duration)
+            }
+            val after = currentDateTime()
+
+            assertEquals(0, TestDate.select { TestDate.time less    before }.count())
+            assertEquals(4, TestDate.select { TestDate.time greater before }.count())
+            assertEquals(2, TestDate.select { TestDate.time less    middle }.count())
+            assertEquals(2, TestDate.select { TestDate.time greater middle }.count())
+            assertEquals(4, TestDate.select { TestDate.time less    after  }.count())
+            assertEquals(0, TestDate.select { TestDate.time greater after  }.count())
+        }
+    }
+
+    // Checks that old numeric datetime columns works fine with new text representation
+    @Test
+    fun testSQLiteDateTimeFieldRegression() {
+        val TestDate = object : IntIdTable("TestDate") {
+            val time = datetime("time").defaultExpression(CurrentDateTime())
+        }
+
+        withDb(TestDB.SQLITE) {
+            try {
+                exec("CREATE TABLE IF NOT EXISTS TestDate (id INTEGER PRIMARY KEY AUTOINCREMENT, \"time\" NUMERIC DEFAULT (CURRENT_TIMESTAMP) NOT NULL);")
+                TestDate.insert { }
+                val year = TestDate.time.year()
+                val month = TestDate.time.month()
+                val day = TestDate.time.day()
+                val hour = TestDate.time.hour()
+                val minute = TestDate.time.minute()
+
+                val result = TestDate.slice(year, month, day, hour, minute).selectAll().single()
+
+                val now = DateTime.now()
+                assertEquals(now.year, result[year])
+                assertEquals(now.monthOfYear, result[month])
+                assertEquals(now.dayOfMonth, result[day])
+                assertEquals(now.hourOfDay, result[hour])
+                assertEquals(now.minuteOfHour, result[minute])
+            } finally {
+                SchemaUtils.drop(TestDate)
+            }
+        }
+    }
+
+    @Test
+    fun `test No transaction in context when accessing datetime field outside the transaction`() {
+        val TestData = object : IntIdTable("TestData") {
+            val name = varchar("name", length = 50)
+            val dateTime = datetime("date-time")
+        }
+
+        val date = DateTime.now()
+        var list1: ResultRow? = null
+        withTables(TestData) {
+            TestData.insert {
+                it[name] = "test1"
+                it[dateTime] = date
+            }
+
+            list1 = assertNotNull(TestData.selectAll().singleOrNull())
+            assertEquals("test1", list1?.get(TestData.name))
+            assertEquals(date.millis, list1?.get(TestData.dateTime)?.millis)
+        }
+        assertEquals("test1", list1?.get(TestData.name))
+        assertEquals(date.millis, list1?.get(TestData.dateTime)?.millis)
+    }
 }
+
+fun Table.insertAndWait(duration: Long) {
+    this.insert {  }
+    TransactionManager.current().commit()
+    Thread.sleep(duration)
+}
+
+fun currentDateTime(): DateTime = DateTime.now().withZone(DateTimeZone.getDefault())

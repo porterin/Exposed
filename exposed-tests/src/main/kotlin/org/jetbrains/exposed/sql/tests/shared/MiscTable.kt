@@ -7,6 +7,9 @@ import java.math.BigDecimal
 import kotlin.test.assertEquals
 
 open class MiscTable : Table() {
+    val by = byte("by")
+    val byn = byte("byn").nullable()
+
     val sm = short("sm")
     val smn = short("smn").nullable()
 
@@ -18,6 +21,9 @@ open class MiscTable : Table() {
 
     val es = enumerationByName("es", 5, E::class)
     val esn = enumerationByName("esn", 5, E::class).nullable()
+
+    val c = varchar("c", 4)
+    val cn = varchar("cn", 4).nullable()
 
     val s = varchar("s", 100)
     val sn = varchar("sn", 100).nullable()
@@ -37,11 +43,17 @@ open class MiscTable : Table() {
     }
 }
 
-fun MiscTable.checkRow(row: ResultRow,
-                            sm: Short, smn: Short?,
-                            n: Int, nn: Int?, e: MiscTable.E, en: MiscTable.E?,
-                            es: MiscTable.E, esn: MiscTable.E?, s: String, sn: String?,
-                            dc: BigDecimal, dcn: BigDecimal?, fcn: Float?, dblcn: Double?) {
+fun MiscTable.checkRow(
+    row: ResultRow,
+    by: Byte, byn: Byte?,
+    sm: Short, smn: Short?,
+    n: Int, nn: Int?, e: MiscTable.E, en: MiscTable.E?,
+    es: MiscTable.E, esn: MiscTable.E?,
+    c: String, cn: String?, s: String, sn: String?,
+    dc: BigDecimal, dcn: BigDecimal?, fcn: Float?, dblcn: Double?
+) {
+    assertEquals(row[this.by], by)
+    assertEquals(row[this.byn], byn)
     assertEquals(row[this.sm], sm)
     assertEquals(row[this.smn], smn)
     assertEquals(row[this.n], n)
@@ -50,6 +62,8 @@ fun MiscTable.checkRow(row: ResultRow,
     assertEquals(row[this.en], en)
     assertEquals(row[this.es], es)
     assertEquals(row[this.esn], esn)
+    assertEquals(row[this.c], c)
+    assertEquals(row[this.cn], cn)
     assertEquals(row[this.s], s)
     assertEquals(row[this.sn], sn)
     assertEquals(row[this.dc], dc)
@@ -59,10 +73,13 @@ fun MiscTable.checkRow(row: ResultRow,
 }
 
 fun MiscTable.checkInsert(row: InsertStatement<Number>,
+                                by: Byte, byn: Byte?,
                                 sm: Short, smn: Short?,
                                 n: Int, nn: Int?, e: MiscTable.E, en: MiscTable.E?,
                                 es: MiscTable.E, esn: MiscTable.E?, s: String, sn: String?,
                                 dc: BigDecimal, dcn: BigDecimal?, fcn: Float?, dblcn: Double?) {
+    assertEquals(row[this.by], by)
+    assertEquals(row[this.byn], byn)
     assertEquals(row[this.sm], sm)
     assertEquals(row[this.smn], smn)
     assertEquals(row[this.n], n)

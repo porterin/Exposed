@@ -6,6 +6,7 @@ import org.jetbrains.exposed.sql.statements.api.ExposedConnection
 import java.sql.Connection
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedDeque
+import java.util.concurrent.atomic.AtomicReference
 
 interface TransactionInterface {
 
@@ -37,6 +38,10 @@ private object NotInitializedManager : TransactionManager {
     override fun newTransaction(isolation: Int, outerTransaction: Transaction?): Transaction = error("Please call Database.connect() before using this code")
 
     override fun currentOrNull(): Transaction? = error("Please call Database.connect() before using this code")
+
+    override fun bindTransactionToThread(transaction: Transaction?) {
+        error("Please call Database.connect() before using this code")
+    }
 }
 
 interface TransactionManager {
@@ -49,24 +54,33 @@ interface TransactionManager {
 
     fun currentOrNull(): Transaction?
 
-    companion object {
+    fun bindTransactionToThread(transaction: Transaction?)
 
-        private val managers = ConcurrentLinkedDeque<TransactionManager>().apply {
-            push(NotInitializedManager)
-        }
+    companion object {
+        private val currentDefaultDatabase = AtomicReference<Database>()
+
+        var defaultDatabase: Database?
+            get() = currentDefaultDatabase.get() ?: databases.firstOrNull()
+            set(value) { currentDefaultDatabase.set(value) }
+
+        private val databases = ConcurrentLinkedDeque<Database>()
 
         private val registeredDatabases = ConcurrentHashMap<Database, TransactionManager>()
 
         fun registerManager(database: Database, manager: TransactionManager) {
+            if (defaultDatabase == null) {
+                currentThreadManager.remove()
+            }
             registeredDatabases[database] = manager
-            managers.push(manager)
+            databases.push(database)             
         }
 
         fun closeAndUnregister(database: Database) {
             val manager = registeredDatabases[database]
             manager?.let {
                 registeredDatabases.remove(database)
-                managers.remove(it)
+                databases.remove(database)
+                currentDefaultDatabase.compareAndSet(database, null)
                 if (currentThreadManager.get() == it)
                     currentThreadManager.remove()
             }
@@ -75,7 +89,9 @@ interface TransactionManager {
         fun managerFor(database: Database?) = if (database != null) registeredDatabases[database] else manager
 
         internal val currentThreadManager = object : ThreadLocal<TransactionManager>() {
-            override fun initialValue(): TransactionManager = managers.first
+            override fun initialValue(): TransactionManager {
+                return defaultDatabase?.let { registeredDatabases.getValue(it) } ?: NotInitializedManager
+            }
         }
 
         val manager: TransactionManager
@@ -92,7 +108,7 @@ interface TransactionManager {
 
         fun current() = currentOrNull() ?: error("No transaction in context.")
 
-        fun isInitialized() = managers.first != NotInitializedManager
+        fun isInitialized() = defaultDatabase != null
     }
 }
 
@@ -112,4 +128,5 @@ internal inline fun TransactionInterface.closeLoggingException(log: (Exception) 
     }
 }
 
-val Database?.transactionManager: TransactionManager get() = TransactionManager.managerFor(this) ?: throw RuntimeException("database ${this} don't have any transaction manager")
+val Database?.transactionManager: TransactionManager
+    get() = TransactionManager.managerFor(this) ?: throw RuntimeException("database $this don't have any transaction manager")

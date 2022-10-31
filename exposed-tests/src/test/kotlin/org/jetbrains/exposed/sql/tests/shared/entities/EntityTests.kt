@@ -27,12 +27,14 @@ import kotlin.test.assertNull
 object EntityTestsData {
 
     object YTable: IdTable<String>("YTable") {
-        override val id: Column<EntityID<String>> = varchar("uuid", 36).primaryKey().entityId().clientDefault {
+        override val id: Column<EntityID<String>> = varchar("uuid", 36).entityId().clientDefault {
             EntityID(UUID.randomUUID().toString(), YTable)
         }
 
         val x = bool("x").default(true)
         val blob = blob("content").nullable()
+
+        override val primaryKey = PrimaryKey(id)
     }
 
     object XTable: IntIdTable("XTable") {
@@ -103,11 +105,11 @@ class EntityTests: DatabaseTestsBase() {
     @Test fun testDefaults02() {
         withTables(EntityTestsData.YTable, EntityTestsData.XTable) {
             val a: EntityTestsData.AEntity = EntityTestsData.AEntity.create(false, EntityTestsData.XType.A)
-            assertEquals (a.b1, false, "a.b1 mismatched")
-
             val b: EntityTestsData.BEntity = EntityTestsData.AEntity.create(false, EntityTestsData.XType.B) as EntityTestsData.BEntity
             val y = EntityTestsData.YEntity.new { x = false }
-            assertEquals (b.b1, false, "a.b1 mismatched")
+
+            assertEquals (a.b1, false, "a.b1 mismatched")
+            assertEquals (b.b1, false, "b.b1 mismatched")
             assertEquals (b.b2, false, "b.b2 mismatched")
 
             b.y = y
@@ -135,6 +137,38 @@ class EntityTests: DatabaseTestsBase() {
 
             y2.content = ExposedBlob("foo2".toByteArray())
             flushCache()
+        }
+    }
+
+    @Test fun testTextFieldOutsideTheTransaction() {
+        val objectsToVerify = arrayListOf<Pair<Human, TestDB>>()
+        withTables(Humans) { testDb ->
+            val y1 = Human.new {
+                h = "foo"
+            }
+
+            flushCache()
+            y1.refresh(flush = false)
+
+            objectsToVerify.add(y1 to testDb)
+        }
+        objectsToVerify.forEach { (human, testDb) ->
+            assertEquals("foo", human.h, "Failed on ${testDb.name}" )
+        }
+    }
+
+    @Test fun testNewWithIdAndRefresh() {
+        val objectsToVerify = arrayListOf<Pair<Human, TestDB>>()
+        withTables(listOf(TestDB.SQLSERVER), Humans) { testDb ->
+            val x = Human.new(2) {
+                h = "foo"
+            }
+            x.refresh(flush = true)
+            objectsToVerify.add(x to testDb)
+        }
+        objectsToVerify.forEach { (human, testDb) ->
+            assertEquals("foo", human.h, "Failed on ${testDb.name}" )
+            assertEquals(2, human.id.value, "Failed on ${testDb.name}" )
         }
     }
 
@@ -230,7 +264,7 @@ class EntityTests: DatabaseTestsBase() {
         withTables(Boards, Posts) {
             val parent = Post.new { this.category = Category.new { title = "title" } }
             Post.new { this.parent = parent } // first flush before referencing
-            assertEquals(2, Post.all().count())
+            assertEquals(2L, Post.all().count())
         }
     }
 
@@ -289,11 +323,11 @@ class EntityTests: DatabaseTestsBase() {
                 this.board = board
                 this.category = Category.new { title = "title" }
             }
-            assertEquals(1, board.posts.count())
+            assertEquals(1L, board.posts.count())
             assertEquals(post1, board.posts.single())
 
             Post.new { this.board = board }
-            assertEquals(2, board.posts.count())
+            assertEquals(2L, board.posts.count())
         }
     }
 
@@ -310,7 +344,7 @@ class EntityTests: DatabaseTestsBase() {
 
 
     object Humans : IntIdTable("human") {
-        val h = text("h")
+        val h = text("h", eagerLoading = true)
     }
 
     object Users : IdTable<Int>("user") {
@@ -384,9 +418,9 @@ class EntityTests: DatabaseTestsBase() {
                 parent = post1
             }
 
-            assertEquals(2, Post.all().count())
-            assertEquals(2, category1.posts.count())
-            assertEquals(2, Posts.select { Posts.optCategory eq category1.uniqueId }.count())
+            assertEquals(2L, Post.all().count())
+            assertEquals(2L, category1.posts.count())
+            assertEquals(2L, Posts.select { Posts.optCategory eq category1.uniqueId }.count())
         }
     }
 
@@ -407,11 +441,11 @@ class EntityTests: DatabaseTestsBase() {
             }
             commit()
 
-            assertEquals(2, category1.posts.count())
+            assertEquals(2L, category1.posts.count())
             assertEquals(2, category1.posts.toList().size)
             assertEquals(1, category1.posts.limit(1).toList().size)
-            assertEquals(1, category1.posts.limit(1).count())
-            assertEquals(2, category1.posts.count())
+            assertEquals(1L, category1.posts.limit(1).count())
+            assertEquals(2L, category1.posts.count())
             assertEquals(2, category1.posts.toList().size)
         }
     }
@@ -431,7 +465,6 @@ class EntityTests: DatabaseTestsBase() {
 
     @Test fun `test what update of inserted entities goes before an insert`() {
         withTables(Categories, Posts) {
-            addLogger(StdOutSqlLogger)
             val category1 = Category.new {
                 title = "category1"
             }
@@ -566,8 +599,10 @@ class EntityTests: DatabaseTestsBase() {
     }
 
     object SchoolHolidays : Table(name = "school_holidays") {
-        val school          = reference("school_id", Schools, ReferenceOption.CASCADE, ReferenceOption.CASCADE).primaryKey(0)
-        val holiday         = reference("holiday_id", Holidays, ReferenceOption.CASCADE, ReferenceOption.CASCADE).primaryKey(1)
+        val school          = reference("school_id", Schools, ReferenceOption.CASCADE, ReferenceOption.CASCADE)
+        val holiday         = reference("holiday_id", Holidays, ReferenceOption.CASCADE, ReferenceOption.CASCADE)
+
+        override val primaryKey = PrimaryKey(school, holiday)
     }
 
     object Schools : IntIdTable(name = "school") {
@@ -1199,6 +1234,37 @@ class EntityTests: DatabaseTestsBase() {
 
                 assertEqualCollections(cache.referrers[student1.id]?.get(StudentBios.student)?.toList().orEmpty(), bio1)
             }
+        }
+    }
+
+    @Test fun `test reference cache doesn't fully invalidated on set entity reference`() {
+        withTables(Regions, Schools, Students, StudentBios) {
+            val region1 = Region.new {
+                name = "United States"
+            }
+
+            val school1 = School.new {
+                name = "Eton"
+                region = region1
+            }
+
+            val student1 = Student.new {
+                name = "James Smith"
+                school = school1
+            }
+
+            val student2 = Student.new {
+                name = "John Smith"
+                school = school1
+            }
+
+            val bio1 = StudentBio.new {
+                student = student1
+                dateOfBirth = "01/01/2000"
+            }
+
+            kotlin.test.assertEquals(bio1, student1.bio)
+            kotlin.test.assertEquals(bio1.student, student1)
         }
     }
 }

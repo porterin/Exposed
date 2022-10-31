@@ -13,22 +13,22 @@ import org.jetbrains.exposed.sql.tests.TestDB
 import org.jetbrains.exposed.sql.tests.currentDialectTest
 import org.jetbrains.exposed.sql.tests.inProperCase
 import org.jetbrains.exposed.sql.tests.shared.dml.DMLTestsData
-import org.jetbrains.exposed.sql.transactions.TransactionManager
+import org.jetbrains.exposed.sql.vendors.PostgreSQLDialect
+import org.jetbrains.exposed.sql.vendors.SQLServerDialect
 import org.jetbrains.exposed.sql.vendors.SQLiteDialect
 import org.junit.Test
 import org.postgresql.util.PGobject
-import java.sql.SQLException
 import java.util.*
-import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
 
 class DDLTests : DatabaseTestsBase() {
 
     @Test fun tableExists01() {
         val TestTable = object : Table() {
-            val id = integer("id").primaryKey()
+            val id = integer("id")
             val name = varchar("name", length = 42)
+
+            override val primaryKey = PrimaryKey(id)
         }
 
         withTables {
@@ -38,8 +38,10 @@ class DDLTests : DatabaseTestsBase() {
 
     @Test fun tableExists02() {
         val TestTable = object : Table() {
-            val id = integer("id").primaryKey()
+            val id = integer("id")
             val name = varchar("name", length = 42)
+
+            override val primaryKey = PrimaryKey(id)
         }
 
         withTables(TestTable) {
@@ -60,105 +62,29 @@ class DDLTests : DatabaseTestsBase() {
         }
     }
 
-
-    @Test fun testCreateMissingTablesAndColumns01() {
-        val TestTable = object : Table("test_table") {
-            val id = integer("id").primaryKey()
-            val name = varchar("name", length = 42)
-            val time = long("time").uniqueIndex()
-        }
-
-        withTables(excludeSettings = listOf(TestDB.H2_MYSQL), tables = *arrayOf(TestTable)) {
-            SchemaUtils.createMissingTablesAndColumns(TestTable)
-            assertTrue(TestTable.exists())
-            SchemaUtils.drop(TestTable)
-        }
-    }
-
-    @Test fun testCreateMissingTablesAndColumns02() {
-        val TestTable = object : IdTable<String>("Users2") {
-            override val id: Column<EntityID<String>> = varchar("id", 64).clientDefault { UUID.randomUUID().toString() }.primaryKey().entityId()
-
-            val name = varchar("name", 255)
-            val email = varchar("email", 255).uniqueIndex()
-            val camelCased = varchar("camelCased", 255).index()
-        }
-
-        withDb {
-            if (!db.url.startsWith("jdbc:mysql:mxj")) {
-                SchemaUtils.createMissingTablesAndColumns(TestTable)
-                assertTrue(TestTable.exists())
-                try {
-                    SchemaUtils.createMissingTablesAndColumns(TestTable)
-                } finally {
-                    SchemaUtils.drop(TestTable)
-                }
-            }
-        }
-    }
-
-    @Test fun testCreateMissingTablesAndColumnsChangeNullability() {
-        val t1 = object : IntIdTable("foo") {
-            val foo = varchar("foo", 50)
-        }
-
-        val t2 = object : IntIdTable("foo") {
-            val foo = varchar("foo", 50).nullable()
-        }
-
-        withDb(excludeSettings = listOf(TestDB.SQLITE)) {
-            SchemaUtils.createMissingTablesAndColumns(t1)
-            t1.insert { it[foo] = "ABC" }
-            assertFailAndRollback("Can't insert to not-null column") {
-                t2.insert { it[foo] = null }
-            }
-
-            SchemaUtils.createMissingTablesAndColumns(t2)
-            t2.insert { it[foo] = null }
-            assertFailAndRollback("Can't make column non-null while has null value") {
-                SchemaUtils.createMissingTablesAndColumns(t1)
-            }
-
-            t2.deleteWhere { t2.foo.isNull() }
-
-            SchemaUtils.createMissingTablesAndColumns(t1)
-            assertFailAndRollback("Can't insert to nullable column") {
-                t2.insert { it[foo] = null }
-            }
-            SchemaUtils.drop(t1)
-        }
-    }
-
-    @Test fun testCreateMissingTablesAndColumnsChangeCascadeType() {
-        val fooTable = object : IntIdTable("foo") {
-            val foo = varchar("foo", 50)
-        }
-
-        val barTable1 = object : IntIdTable("bar") {
-            val foo = optReference("foo", fooTable, onDelete = ReferenceOption.NO_ACTION)
-        }
-
-        val barTable2 = object : IntIdTable("bar") {
-            val foo = optReference("foo", fooTable, onDelete = ReferenceOption.CASCADE)
-        }
-
-        withTables(fooTable, barTable1) {
-            SchemaUtils.createMissingTablesAndColumns(barTable2)
-        }
-    }
-
     // Placed outside test function to shorten generated name
     val UnnamedTable = object : Table() {
-        val id = integer("id").primaryKey()
+        val id = integer("id")
         val name = varchar("name", length = 42)
+
+        override val primaryKey = PrimaryKey(id)
     }
 
     @Test fun unnamedTableWithQuotesSQL() {
-        withTables(UnnamedTable) {
+        withTables(excludeSettings = listOf(TestDB.SQLITE), tables = *arrayOf(UnnamedTable)) {
             val q = db.identifierManager.quoteString
             val tableName = if (currentDialectTest.needsQuotesWhenSymbolsInNames) { "$q${"UnnamedTable$1".inProperCase()}$q" } else { "UnnamedTable$1".inProperCase() }
             assertEquals("CREATE TABLE " + addIfNotExistsIfSupported() + "$tableName " +
                     "(${"id".inProperCase()} ${currentDialectTest.dataTypeProvider.integerType()} PRIMARY KEY, $q${"name".inProperCase()}$q VARCHAR(42) NOT NULL)", UnnamedTable.ddl)
+        }
+    }
+
+    @Test fun unnamedTableWithQuotesSQLInSQLite() {
+        withDb(TestDB.SQLITE) {
+            val q = db.identifierManager.quoteString
+            val tableName = if (currentDialectTest.needsQuotesWhenSymbolsInNames) { "$q${"UnnamedTable$1".inProperCase()}$q" } else { "UnnamedTable$1".inProperCase() }
+            assertEquals("CREATE TABLE " + addIfNotExistsIfSupported() + "$tableName " +
+                    "(${"id".inProperCase()} ${currentDialectTest.dataTypeProvider.integerType()} NOT NULL PRIMARY KEY, $q${"name".inProperCase()}$q VARCHAR(42) NOT NULL)", UnnamedTable.ddl)
         }
     }
 
@@ -177,8 +103,10 @@ class DDLTests : DatabaseTestsBase() {
     @Test fun tableWithDifferentColumnTypesSQL01() {
         val TestTable = object : Table("different_column_types") {
             val id = integer("id").autoIncrement()
-            val name = varchar("name", 42).primaryKey()
+            val name = varchar("name", 42)
             val age = integer("age").nullable()
+
+            override val primaryKey = PrimaryKey(name)
         }
 
         withTables(excludeSettings = listOf(TestDB.MYSQL, TestDB.ORACLE, TestDB.MARIADB, TestDB.SQLITE), tables = *arrayOf(TestTable)) {
@@ -191,23 +119,53 @@ class DDLTests : DatabaseTestsBase() {
 
     @Test fun tableWithDifferentColumnTypesSQL02() {
         val TestTable = object : Table("with_different_column_types") {
-            val id = integer("id").primaryKey()
-            val name = varchar("name", 42).primaryKey()
+            val id = integer("id")
+            val name = varchar("name", 42)
             val age = integer("age").nullable()
+
+            override val primaryKey = PrimaryKey(id, name)
         }
 
-        withTables(excludeSettings = listOf(TestDB.MYSQL), tables = *arrayOf(TestTable)) {
+        withTables(excludeSettings = listOf(TestDB.MYSQL, TestDB.SQLITE), tables = *arrayOf(TestTable)) {
             val q = db.identifierManager.quoteString
-            assertEquals("CREATE TABLE " + addIfNotExistsIfSupported() + "${"with_different_column_types".inProperCase()} " +
-                    "(${"id".inProperCase()} ${currentDialectTest.dataTypeProvider.integerType()}, $q${"name".inProperCase()}$q VARCHAR(42), ${"age".inProperCase()} ${db.dialect.dataTypeProvider.integerType()} NULL, " +
-                    "CONSTRAINT pk_with_different_column_types PRIMARY KEY (${"id".inProperCase()}, $q${"name".inProperCase()}$q))", TestTable.ddl)
+            val tableDescription = "CREATE TABLE " + addIfNotExistsIfSupported() + "with_different_column_types".inProperCase()
+            val idDescription = "${"id".inProperCase()} ${currentDialectTest.dataTypeProvider.integerType()}"
+            val nameDescription = "$q${"name".inProperCase()}$q VARCHAR(42)"
+            val ageDescription = "${"age".inProperCase()} ${db.dialect.dataTypeProvider.integerType()} NULL"
+            val constraint = "CONSTRAINT pk_with_different_column_types PRIMARY KEY (${"id".inProperCase()}, $q${"name".inProperCase()}$q)"
+
+            assertEquals( "$tableDescription ($idDescription, $nameDescription, $ageDescription, $constraint)", TestTable.ddl)
+        }
+    }
+
+    @Test fun tableWithDifferentColumnTypesInSQLite() {
+        val TestTable = object : Table("with_different_column_types") {
+            val id = integer("id")
+            val name = varchar("name", 42)
+            val age = integer("age").nullable()
+
+            override val primaryKey = PrimaryKey(id, name)
+        }
+
+        withDb(TestDB.SQLITE) {
+            val q = db.identifierManager.quoteString
+
+            val tableDescription = "CREATE TABLE " + addIfNotExistsIfSupported() + "with_different_column_types".inProperCase()
+            val idDescription = "${"id".inProperCase()} ${currentDialectTest.dataTypeProvider.integerType()} NOT NULL"
+            val nameDescription = "$q${"name".inProperCase()}$q VARCHAR(42) NOT NULL"
+            val ageDescription = "${"age".inProperCase()} ${db.dialect.dataTypeProvider.integerType()} NULL"
+            val constraint = "CONSTRAINT pk_with_different_column_types PRIMARY KEY (${"id".inProperCase()}, $q${"name".inProperCase()}$q)"
+
+            assertEquals("$tableDescription ($idDescription, $nameDescription, $ageDescription, $constraint)", TestTable.ddl)
         }
     }
 
     @Test fun tableWithMultiPKandAutoIncrement() {
         val Foo = object : IdTable<Long>("FooTable") {
-            val bar = integer("bar").primaryKey()
-            override val id: Column<EntityID<Long>> = long("id").entityId().autoIncrement().primaryKey()
+            val bar = integer("bar")
+            override val id: Column<EntityID<Long>> = long("id").entityId().autoIncrement()
+
+            override val primaryKey = PrimaryKey(bar, id)
         }
 
         withTables(Foo) {
@@ -227,8 +185,10 @@ class DDLTests : DatabaseTestsBase() {
 
     @Test fun testIndices01() {
         val t = object : Table("t1") {
-            val id = integer("id").primaryKey()
+            val id = integer("id")
             val name = varchar("name", 255).index()
+
+            override val primaryKey = PrimaryKey(id)
         }
 
         withTables(t) {
@@ -240,10 +200,12 @@ class DDLTests : DatabaseTestsBase() {
 
     @Test fun testIndices02() {
         val t = object : Table("t2") {
-            val id = integer("id").primaryKey()
+            val id = integer("id")
             val lvalue = integer("lvalue")
             val rvalue = integer("rvalue")
             val name = varchar("name", 255).index()
+
+            override val primaryKey = PrimaryKey(id)
 
             init {
                 index (false, lvalue, rvalue)
@@ -263,8 +225,10 @@ class DDLTests : DatabaseTestsBase() {
 
     @Test fun testUniqueIndices01() {
         val t = object : Table("t1") {
-            val id = integer("id").primaryKey()
+            val id = integer("id")
             val name = varchar("name", 255).uniqueIndex()
+
+            override val primaryKey = PrimaryKey(id)
         }
 
         withTables(t) {
@@ -280,8 +244,10 @@ class DDLTests : DatabaseTestsBase() {
 
     @Test fun testUniqueIndicesCustomName() {
         val t = object : Table("t1") {
-            val id = integer("id").primaryKey()
+            val id = integer("id")
             val name = varchar("name", 255).uniqueIndex("U_T1_NAME")
+
+            override val primaryKey = PrimaryKey(id)
         }
 
         withTables(t) {
@@ -292,72 +258,6 @@ class DDLTests : DatabaseTestsBase() {
             else
                 assertEquals("ALTER TABLE ${"t1".inProperCase()} ADD CONSTRAINT ${"U_T1_NAME"} UNIQUE ($q${"name".inProperCase()}$q)", alter)
 
-        }
-    }
-
-    @Test fun testCompositePrimaryKeyCreateTable() {
-        val tableName = "Foo"
-        val t = object : Table(tableName) {
-            val id1 = integer("id1").primaryKey()
-            val id2 = integer("ID2").primaryKey()
-        }
-
-        withTables(t) {
-            val tr = TransactionManager.current()
-            val id1ProperName = tr.identity(t.id1)
-            val id2ProperName = tr.identity(t.id2)
-
-            assertEquals(
-                    "CREATE TABLE " + addIfNotExistsIfSupported() + "${tableName.inProperCase()} (" +
-                            "${t.columns.joinToString { it.descriptionDdl() }}, " +
-                            "CONSTRAINT pk_$tableName PRIMARY KEY ($id1ProperName, $id2ProperName)" +
-                            ")",
-                    t.ddl)
-        }
-    }
-
-    @Test fun testAddCompositePrimaryKeyToTableH2() {
-        val tableName = "Foo"
-        val t = object : Table(tableName) {
-            val id1 = integer("id1").primaryKey()
-            val id2 = integer("id2").primaryKey()
-        }
-
-        withDb(TestDB.H2) {
-            val tableProperName = tableName.inProperCase()
-            val id1ProperName = t.id1.name.inProperCase()
-            val ddlId1 = t.id1.ddl
-            val id2ProperName = t.id2.name.inProperCase()
-            val ddlId2 = t.id2.ddl
-
-            assertEquals(1, ddlId1.size)
-            assertEquals("ALTER TABLE $tableProperName ADD ${t.id1.descriptionDdl()}", ddlId1.first())
-
-            assertEquals(2, ddlId2.size)
-            assertEquals("ALTER TABLE $tableProperName ADD $id2ProperName ${t.id2.columnType.sqlType()}", ddlId2.first())
-            assertEquals("ALTER TABLE $tableProperName ADD CONSTRAINT pk_$tableName PRIMARY KEY ($id1ProperName, $id2ProperName)", t.id2.ddl.last())
-        }
-    }
-
-    @Test fun testAddCompositePrimaryKeyToTableNotH2() {
-        val tableName = "Foo"
-        val t = object : Table(tableName) {
-            val id1 = integer("id1").primaryKey()
-            val id2 = integer("id2").primaryKey()
-        }
-
-        withTables(excludeSettings = listOf(TestDB.H2, TestDB.H2_MYSQL), tables = *arrayOf(t)) {
-            val tableProperName = tableName.inProperCase()
-            val id1ProperName = t.id1.name.inProperCase()
-            val ddlId1 = t.id1.ddl
-            val id2ProperName = t.id2.name.inProperCase()
-            val ddlId2 = t.id2.ddl
-
-            assertEquals(1, ddlId1.size)
-            assertEquals("ALTER TABLE $tableProperName ADD ${t.id1.descriptionDdl()}", ddlId1.first())
-
-            assertEquals(1, ddlId2.size)
-            assertEquals("ALTER TABLE $tableProperName ADD ${t.id2.descriptionDdl()}, ADD CONSTRAINT pk_$tableName PRIMARY KEY ($id1ProperName, $id2ProperName)", ddlId2.first())
         }
     }
 
@@ -407,8 +307,10 @@ class DDLTests : DatabaseTestsBase() {
 
     @Test fun testBlob() {
         val t = object: Table("t1") {
-            val id = integer("id").autoIncrement("t1_seq").primaryKey()
+            val id = integer("id").autoIncrement("t1_seq")
             val b = blob("blob")
+
+            override val primaryKey = PrimaryKey(id)
         }
 
         withTables(t) {
@@ -440,7 +342,7 @@ class DDLTests : DatabaseTestsBase() {
 
         fun SizedIterable<ResultRow>.readAsString() = map { String(it[tableWithBinary.binaryColumn]) }
 
-        withDb(listOf(TestDB.ORACLE,TestDB.POSTGRESQL)) {
+        withDb(listOf(TestDB.POSTGRESQL, TestDB.POSTGRESQLNG)) {
             val exposedBytes = "Exposed".toByteArray()
             val kotlinBytes = "Kotlin".toByteArray()
 
@@ -468,11 +370,11 @@ class DDLTests : DatabaseTestsBase() {
 
     @Test fun testBinary() {
         val t = object : Table("t") {
-            val binary = binary("bytes", 10)
+            val binary = binary("bytes", 10).nullable()
             val byteCol = binary("byteCol", 1).clientDefault { byteArrayOf(0) }
         }
 
-        fun SizedIterable<ResultRow>.readAsString() = map { String(it[t.binary]) }
+        fun SizedIterable<ResultRow>.readAsString() = map { it[t.binary]?.let { String(it) } }
 
         withTables(t) {
             t.insert { it[t.binary] = "Hello!".toByteArray() }
@@ -489,6 +391,13 @@ class DDLTests : DatabaseTestsBase() {
              }
 
             assertEqualCollections(t.selectAll().readAsString(), "Hello!", "World!")
+
+            t.insert {
+                it[t.binary] = null
+                it[t.byteCol] = byteArrayOf(2)
+            }
+
+            assertEqualCollections(t.selectAll().readAsString(), "Hello!", "World!", null)
 
             val world = t.select { t.binary eq worldBytes }.readAsString()
             assertEqualCollections(world, "World!")
@@ -512,46 +421,10 @@ class DDLTests : DatabaseTestsBase() {
         }
     }
 
-    @Test fun addAutoPrimaryKey() {
-        val tableName = "Foo"
-        val initialTable = object : Table(tableName) {
-            val bar = text("bar")
-        }
-        val t = IntIdTable(tableName)
-
-
-        withDb(TestDB.H2) {
-            SchemaUtils.createMissingTablesAndColumns(initialTable)
-            assertEquals("ALTER TABLE ${tableName.inProperCase()} ADD ${"id".inProperCase()} ${t.id.columnType.sqlType()}", t.id.ddl.first())
-            assertEquals("ALTER TABLE ${tableName.inProperCase()} ADD CONSTRAINT pk_$tableName PRIMARY KEY (${"id".inProperCase()})", t.id.ddl[1])
-            assertEquals(1, currentDialectTest.tableColumns(t)[t]!!.size)
-            SchemaUtils.createMissingTablesAndColumns(t)
-            assertEquals(2, currentDialectTest.tableColumns(t)[t]!!.size)
-            SchemaUtils.drop(t)
-        }
-
-        withDb(TestDB.SQLITE) {
-            try {
-                SchemaUtils.createMissingTablesAndColumns(t)
-                assertFalse(db.supportsAlterTableWithAddColumn)
-            } catch (e: SQLException) {
-                // SQLite doesn't support
-            } finally {
-                SchemaUtils.drop(t)
-            }
-        }
-
-        withTables(excludeSettings = listOf(TestDB.H2, TestDB.H2_MYSQL, TestDB.SQLITE), tables = *arrayOf(initialTable)) {
-            assertEquals("ALTER TABLE ${tableName.inProperCase()} ADD ${"id".inProperCase()} ${t.id.columnType.sqlType()} PRIMARY KEY", t.id.ddl)
-            assertEquals(1, currentDialectTest.tableColumns(t)[t]!!.size)
-            SchemaUtils.createMissingTablesAndColumns(t)
-            assertEquals(2, currentDialectTest.tableColumns(t)[t]!!.size)
-        }
-    }
-
-
     private abstract class EntityTable(name: String = "") : IdTable<String>(name) {
-        override val id: Column<EntityID<String>> = varchar("id", 64).clientDefault { UUID.randomUUID().toString() }.primaryKey().entityId()
+        override val id: Column<EntityID<String>> = varchar("id", 64).clientDefault { UUID.randomUUID().toString() }.entityId()
+
+        override val primaryKey = PrimaryKey(id)
     }
 
     @Test fun complexTest01() {
@@ -587,13 +460,13 @@ class DDLTests : DatabaseTestsBase() {
                 it[UserToRepo.repo] = repo
             }
 
-            assertEquals(1, UserToRepo.selectAll().count())
+            assertEquals(1L, UserToRepo.selectAll().count())
             UserToRepo.insert {
                 it[UserToRepo.user] = userID
                 it[UserToRepo.repo] = repo
             }
 
-            assertEquals(2, UserToRepo.selectAll().count())
+            assertEquals(2L, UserToRepo.selectAll().count())
         }
     }
 
@@ -616,8 +489,8 @@ class DDLTests : DatabaseTestsBase() {
                 it[table1] = table1id
             }
 
-            assertEquals(1, Table1.selectAll().count())
-            assertEquals(2, Table2.selectAll().count())
+            assertEquals(1L, Table1.selectAll().count())
+            assertEquals(2L, Table2.selectAll().count())
 
             Table2.update {
                 it[table1] = null
@@ -663,6 +536,70 @@ class DDLTests : DatabaseTestsBase() {
         }
     }
 
+    @ExperimentalUnsignedTypes
+    @Test fun testUByteColumnType() {
+        val UbyteTable = object: Table("ubyteTable") {
+            val ubyte = ubyte("ubyte")
+        }
+
+        withTables(UbyteTable){
+            UbyteTable.insert {
+                it[ubyte] = 123u
+            }
+            val result = UbyteTable.selectAll().toList()
+            assertEquals(1, result.size)
+            assertEquals(123u, result.single()[UbyteTable.ubyte])
+        }
+    }
+
+    @ExperimentalUnsignedTypes
+    @Test fun testUshortColumnType() {
+        val UshortTable = object: Table("ushortTable") {
+            val ushort = ushort("ushort")
+        }
+
+        withTables(UshortTable){
+            UshortTable.insert {
+                it[ushort] = 123u
+            }
+            val result = UshortTable.selectAll().toList()
+            assertEquals(1, result.size)
+            assertEquals(123u, result.single()[UshortTable.ushort])
+        }
+    }
+
+    @ExperimentalUnsignedTypes
+    @Test fun testUintColumnType() {
+        val UintTable = object: Table("uintTable") {
+            val uint = uinteger("uint")
+        }
+
+        withTables(UintTable){
+            UintTable.insert {
+                it[uint] = 123u
+            }
+            val result = UintTable.selectAll().toList()
+            assertEquals(1, result.size)
+            assertEquals(123u, result.single()[UintTable.uint])
+        }
+    }
+
+    @ExperimentalUnsignedTypes
+    @Test fun testUlongColumnType() {
+        val UlongTable = object: Table("ulongTable") {
+            val ulong = ulong("ulong")
+        }
+
+        withTables(UlongTable){
+            UlongTable.insert {
+                it[ulong] = 123uL
+            }
+            val result = UlongTable.selectAll().toList()
+            assertEquals(1, result.size)
+            assertEquals(123uL, result.single()[UlongTable.ulong])
+        }
+    }
+
     @Test fun testDeleteMissingTable() {
         val missingTable = Table("missingTable")
         withDb {
@@ -682,7 +619,7 @@ class DDLTests : DatabaseTestsBase() {
                 it[negative] = -14
             }
 
-            assertEquals(1, checkTable.selectAll().count())
+            assertEquals(1L, checkTable.selectAll().count())
 
             assertFailAndRollback("Check constraint 1") {
                 checkTable.insert {
@@ -716,7 +653,7 @@ class DDLTests : DatabaseTestsBase() {
                 it[negative] = -32
             }
 
-            assertEquals(1, checkTable.selectAll().count())
+            assertEquals(1L, checkTable.selectAll().count())
 
             assertFailAndRollback("Check constraint 1") {
                 checkTable.insert {
@@ -770,41 +707,28 @@ class DDLTests : DatabaseTestsBase() {
 
         withTables(Subscriptions) {
             val query = Subscriptions.join(Users, JoinType.INNER, additionalConstraint = {Subscriptions.user eq Users.id}).selectAll()
-            assertEquals(0, query.count())
-        }
-    }
-
-    @Test
-    fun createTableWithMultipleIndexes() {
-        withDb {
-            SchemaUtils.createMissingTablesAndColumns(MultipleIndexesTable)
-        }
-    }
-
-    object MultipleIndexesTable: Table("H2_MULTIPLE_INDEXES") {
-        val value1 = varchar("value1", 255)
-        val value2 = varchar("value2", 255)
-
-        init {
-            uniqueIndex("index1", value1, value2)
-            uniqueIndex("index2", value2, value1)
+            assertEquals(0L, query.count())
         }
     }
 
     @Test
     fun createTableWithForeignKeyToAnotherSchema() {
-        withDb(excludeSettings = listOf(TestDB.SQLITE)) {
-            exec("CREATE SCHEMA ${"one".inProperCase()}")
-            exec("CREATE SCHEMA ${"two".inProperCase()}")
+        val one = Schema("one")
+        val two = Schema("two")
+        withSchemas(excludeSettings = listOf(TestDB.SQLITE), schemas = arrayOf(two, one)) {
             SchemaUtils.create(TableFromSchemeOne, TableFromSchemeTwo)
-            val idFromOne = TableFromSchemeOne.insertAndGetId {  }
+            val idFromOne = TableFromSchemeOne.insertAndGetId { }
 
             TableFromSchemeTwo.insert {
                 it[reference] = idFromOne
             }
 
-            assertEquals(1, TableFromSchemeOne.selectAll().count())
-            assertEquals(1, TableFromSchemeTwo.selectAll().count())
+            assertEquals(1L, TableFromSchemeOne.selectAll().count())
+            assertEquals(1L, TableFromSchemeTwo.selectAll().count())
+
+            if (currentDialectTest is SQLServerDialect) {
+                SchemaUtils.drop(TableFromSchemeTwo, TableFromSchemeOne)
+            }
         }
     }
 

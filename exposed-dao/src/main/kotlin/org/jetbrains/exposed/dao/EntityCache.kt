@@ -11,7 +11,7 @@ val Transaction.entityCache : EntityCache by transactionScope { EntityCache(this
 
 @Suppress("UNCHECKED_CAST")
 class EntityCache(private val transaction: Transaction) {
-    internal var flushingEntities by transactionScope { false }
+    private var flushingEntities = false
     val data = LinkedHashMap<IdTable<*>, MutableMap<Any, Entity<*>>>()
     val inserts = LinkedHashMap<IdTable<*>, MutableList<Entity<*>>>()
     val referrers = HashMap<EntityID<*>, MutableMap<Column<*>, SizedIterable<*>>>()
@@ -93,7 +93,15 @@ class EntityCache(private val transaction: Transaction) {
     }
 
     internal fun removeTablesReferrers(insertedTables: Collection<Table>) {
-        referrers.filterValues { it.any { it.key.table in insertedTables } }.map { it.key }.forEach {
+
+        val insertedTablesSet = insertedTables.toSet()
+        val tablesToRemove: List<Table> = referrers.values.flatMapTo(HashSet()) { it.keys.map { it.table } }
+            .filter { table -> table.columns.any { c -> c.referee?.table in insertedTablesSet } } + insertedTablesSet
+
+        referrers.mapNotNull { (entityId, entityReferrers) ->
+            entityReferrers.filterKeys { it.table in tablesToRemove }.keys.forEach { entityReferrers.remove(it) }
+            entityId.takeIf { entityReferrers.isEmpty() }
+        }.forEach {
             referrers.remove(it)
         }
     }

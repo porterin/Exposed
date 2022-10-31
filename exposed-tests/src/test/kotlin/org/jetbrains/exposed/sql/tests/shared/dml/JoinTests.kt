@@ -54,11 +54,15 @@ class JoinTests : DatabaseTestsBase() {
     @Test
     fun testJoin04() {
         val Numbers = object : Table() {
-            val id = integer("id").primaryKey()
+            val id = integer("id")
+
+            override val primaryKey = PrimaryKey(id)
         }
 
         val Names = object : Table() {
-            val name = varchar("name", 10).primaryKey()
+            val name = varchar("name", 10)
+
+            override val primaryKey = PrimaryKey(name)
         }
 
         val Map = object : Table() {
@@ -122,7 +126,7 @@ class JoinTests : DatabaseTestsBase() {
             }
 
             val result = foo.innerJoin(bar).selectAll()
-            assertEquals(1, result.count())
+            assertEquals(1L, result.count())
         }
     }
 
@@ -149,7 +153,7 @@ class JoinTests : DatabaseTestsBase() {
                 }
 
                 val result = foo.innerJoin(bar).selectAll()
-                assertEquals(1, result.count())
+                assertEquals(1L, result.count())
             }
         }
     }
@@ -170,7 +174,7 @@ class JoinTests : DatabaseTestsBase() {
     fun testJoinWithJoin01() {
         withCitiesAndUsers { cities, users, userData ->
             val rows = (cities innerJoin (users innerJoin userData)).selectAll()
-            assertEquals(2, rows.count())
+            assertEquals(2L, rows.count())
         }
     }
 
@@ -182,7 +186,7 @@ class JoinTests : DatabaseTestsBase() {
                 cities.id greater 1 and (cities.name.neq(usersAlias[users.name]))
             }
 
-            assertEquals(2, join.selectAll().count())
+            assertEquals(2L, join.selectAll().count())
         }
     }
 
