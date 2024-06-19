@@ -1,0 +1,30 @@
+name: Push PR Override Merge Data to Google Sheets
+
+on:
+  pull_request:
+    branches:
+      - master
+    types:
+      - closed
+      
+jobs:
+  pr_merge_override_check:
+    if: github.event.pull_request.merged == true
+    runs-on:
+      - self-hosted
+      - k8_runners_small
+    timeout-minutes: 2
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run PR Merge Checker
+        id: pr-merge-checker
+        uses: porterin/github-actions/pr-merge-checker@main
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_READ_PAT: ${{ secrets.PR_OVERRIDE_REPO_READ_PAT }}
+          GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.PR_OVERRIDES_GOOGLE_SHEETS_CREDENTIALS }}
+          GOOGLE_SHEET_ID: ${{ vars.PR_OVERRIDES_GOOGLE_SHEET_ID }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          REPO_TEAM: ${{ vars.REPO_TEAM }} # Repository Variable
