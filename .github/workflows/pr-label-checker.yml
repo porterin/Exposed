@@ -1,0 +1,10 @@
+name: pr-label-checker
+on:
+  pull_request:
+    types: [opened, edited, labeled, unlabeled, synchronize]
+    branches:
+      - master
+
+jobs:
+  pr-label-checker:
+    uses: "porterin/dpq-workflows/.github/workflows/pr-label-checker.yml@main"
