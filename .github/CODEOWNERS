@@ -1,0 +1,6 @@
+# CODEOWNERS file
+# This file defines the default code owners for this repository.
+# Code owners are automatically requested for review when someone opens a pull request.
+
+# Default owner for everything in the repo
+* @porterin/cest-core-engineering-codeowners @porterin/cest-central-eng-codeowners
