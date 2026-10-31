@@ -1,10 +1,13 @@
 repositories {
     jcenter()
+    gradlePluginPortal()
+    mavenCentral()
 }
 
 dependencies {
     gradleApi()
-    compile("com.avast.gradle", "gradle-docker-compose-plugin", "0.9.3")
+    // 0.9.3 was only published to the sunset jcenter; 0.14.2 is the oldest version still hosted.
+    compile("com.avast.gradle", "gradle-docker-compose-plugin", "0.14.2")
 }
 
 plugins {
