@@ -86,6 +86,11 @@ private fun Transaction.commitInAsync() {
         TransactionManager.resetCurrent(temporaryManager)
         try {
             commit()
+        } catch (e: Exception) {
+            rollbackLoggingException { exposedLogger.warn("Transaction rollback failed: ${it.message}. Statement: $currentStatement", it) }
+            throw e
+        } finally {
+            // Close even when commit() throws, otherwise the connection is never returned to the pool.
             try {
                 currentStatement?.let {
                     it.closeIfPossible()
@@ -96,9 +101,6 @@ private fun Transaction.commitInAsync() {
                 exposedLogger.warn("Statements close failed", e)
             }
             closeLoggingException { exposedLogger.warn("Transaction close failed: ${it.message}. Statement: $currentStatement", it) }
-        } catch (e: Exception) {
-            rollbackLoggingException { exposedLogger.warn("Transaction rollback failed: ${it.message}. Statement: $currentStatement", it) }
-            throw e
         }
     } finally {
         val transactionManager = currentTransaction?.db?.transactionManager
