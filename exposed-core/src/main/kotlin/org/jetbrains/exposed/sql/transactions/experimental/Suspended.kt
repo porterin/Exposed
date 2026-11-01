@@ -51,27 +51,29 @@ suspend fun <T> newSuspendedTransaction(context: CoroutineDispatcher? = null, db
     withTransactionScope(context, null, db) {
         val jobId = this.hashCode()
         val txId = tx.id
-        val connectionCode = tx.connection.hashCode()
 
-        logger.debug("Executing {} newSuspendedTransaction in transaction: {} and connection: {}", jobId, txId, connectionCode)
+        // Do not touch tx.connection here: it would borrow a pooled connection on the caller's thread
+        // and hold it while the body waits to be dispatched. Under load that deadlocks the pool against
+        // the dispatcher. The connection stays lazy and is opened by the first statement in the body.
+        logger.debug("Executing {} newSuspendedTransaction in transaction: {}", jobId, txId)
         suspendedTransactionAsyncInternal(true, statement).await()
-            .also { logger.debug("Execution {} newSuspendedTransaction in transaction: {} and connection: {} complete", jobId, txId, connectionCode) }
+            .also { logger.debug("Execution {} newSuspendedTransaction in transaction: {} complete", jobId, txId) }
     }
 
 suspend fun <T> Transaction.suspendedTransaction(context: CoroutineDispatcher? = null, statement: suspend Transaction.() -> T): T =
     withTransactionScope(context, this) {
         val jobId = this.hashCode()
         val txId = tx.id
-        val connectionCode = tx.connection.hashCode()
 
-        logger.debug("Executing {} suspendedTransaction in transaction: {} and connection: {}", jobId, txId, connectionCode)
+        // Keep tx.connection lazy; see newSuspendedTransaction.
+        logger.debug("Executing {} suspendedTransaction in transaction: {}", jobId, txId)
         suspendedTransactionAsyncInternal(false, statement).await()
-            .also { logger.debug("Execution {} suspendedTransaction in transaction: {} and connection: {} complete", jobId, txId, connectionCode) }
+            .also { logger.debug("Execution {} suspendedTransaction in transaction: {} complete", jobId, txId) }
     }
 
 suspend fun <T> continueSuspendedTransaction(context: CoroutineDispatcher? = null, db: Database? = null, statement: suspend Transaction.() -> T): T {
     val currentTransaction = coroutineContext[TransactionScope]?.tx
-    logger.debug("continueSuspendTransaction called with transaction: {} and connection: {}", currentTransaction?.id, currentTransaction?.connection?.hashCode())
+    logger.debug("continueSuspendTransaction called with transaction: {}", currentTransaction?.id)
     return when (currentTransaction) {
         null -> newSuspendedTransaction(context, db, statement)
         else -> currentTransaction.suspendedTransaction(context, statement)
